@@ -165,16 +165,16 @@ if detection_mode == "Automatic":
     min_size = st.sidebar.slider(
         "Minimum Spot Size (pixels)",
         min_value=10,
-        max_value=500,
-        value=100,
+        max_value=100,
+        value=50,
         help="Minimum area of dust spots to detect"
     )
     
     max_size = st.sidebar.slider(
         "Maximum Spot Size (pixels)",
-        min_value=500,
-        max_value=10000,
-        value=5000,
+        min_value=100,
+        max_value=5000,
+        value=2000,
         help="Maximum area of dust spots to detect"
     )
     
@@ -287,8 +287,8 @@ if uploaded_file is not None:
         
         ### Best settings for typical sensor dust:
         1. **Sensitivity**: 10-20 (lower for fainter spots)
-        2. **Minimum Size**: 100-200 pixels (for bloated, out-of-focus spots)
-        3. **Maximum Size**: 5000-8000 pixels (for large blurry areas)
+        2. **Minimum Size**: 30-50 pixels
+        3. **Maximum Size**: 1000-2000 pixels
         4. **Enable blur detection**: ON
         
         ### How to test your camera for sensor dust:
@@ -299,8 +299,7 @@ if uploaded_file is not None:
         
         ### If spots aren't detected:
         - Try **lowering sensitivity** to 5-10
-        - **Increase minimum size** to 100-200 for bloated spots
-        - **Increase maximum size** to 5000-10000 for large areas
+        - **Reduce minimum size** to 20-30
         - Make sure you're testing on a **uniform background area**
         """)
 
