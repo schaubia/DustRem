@@ -187,26 +187,19 @@ else:  # Manual mode
     st.sidebar.markdown("### Manual Selection Settings")
     
     brush_size = st.sidebar.slider(
-        "Default Spot Radius",
+        "Brush Size",
         min_value=10,
         max_value=150,
         value=40,
-        help="Default size for dust spot circles"
+        help="Size of the circle to mark dust spots"
     )
     
     st.sidebar.markdown("""
     ### How to use manual mode:
-    
-    **Method 1: Enter coordinates**
-    - Find spot coordinates in image viewer
-    - Enter x, y, radius
-    - Click "Add Spot"
-    
-    **Method 2: Upload marked image**
-    - Download original image
-    - Draw RED circles in any editor
-    - Upload marked image
-    - Spots auto-detected!
+    1. Upload your image
+    2. Click to place circles over dust spots
+    3. Adjust circle size if needed
+    4. Click 'Remove Marked Spots'
     """)
 
 # File uploader
@@ -282,204 +275,148 @@ if uploaded_file is not None:
                     st.info("❌ No dust spots detected. Try lowering sensitivity or switch to Manual Selection mode.")
     
     else:
-        # MANUAL MODE - Simple coordinate-based selection
-        st.subheader("Manual Dust Spot Removal")
+        # MANUAL MODE
+        st.subheader("Mark dust spots on your image")
+        st.markdown("Click to place circles over dust spots")
         
-        # Initialize session state for manual marks
-        if 'manual_spots' not in st.session_state:
-            st.session_state.manual_spots = []
-        if 'preview_image' not in st.session_state:
-            st.session_state.preview_image = None
+        try:
+            from streamlit_drawable_canvas import st_canvas
+            
+            # Get image dimensions
+            height, width = image_rgb.shape[:2]
+            
+            # Scale image if too large for display
+            max_canvas_width = 800
+            if width > max_canvas_width:
+                scale = max_canvas_width / width
+                canvas_width = max_canvas_width
+                canvas_height = int(height * scale)
+                display_image = cv2.resize(image_rgb, (canvas_width, canvas_height))
+            else:
+                canvas_width = width
+                canvas_height = height
+                display_image = image_rgb
+            
+            # Create canvas with PIL Image
+            pil_bg = Image.fromarray(display_image)
+            
+            canvas_result = st_canvas(
+                fill_color="rgba(255, 0, 0, 0.3)",
+                stroke_width=brush_size,
+                stroke_color="#FF0000",
+                background_image=pil_bg,
+                update_streamlit=True,
+                height=canvas_height,
+                width=canvas_width,
+                drawing_mode="circle",
+                point_display_radius=0,
+                key="canvas",
+            )
+            
+            # Process button
+            if st.button("🔧 Remove Marked Spots", type="primary"):
+                if canvas_result.image_data is not None:
+                    with st.spinner("Removing dust spots..."):
+                        # Create mask from canvas
+                        mask = create_mask_from_drawing(canvas_result, image.shape)
+                        
+                        if mask is not None and cv2.countNonZero(mask) > 0:
+                            # Scale mask back to original size if needed
+                            if mask.shape[:2] != image.shape[:2]:
+                                mask = cv2.resize(mask, (image.shape[1], image.shape[0]), interpolation=cv2.INTER_NEAREST)
+                            
+                            # Remove dust spots
+                            cleaned_image = remove_dust_spots(image, mask)
+                            cleaned_rgb = cv2.cvtColor(cleaned_image, cv2.COLOR_BGR2RGB)
+                            
+                            st.success("✅ Dust spots removed!")
+                            
+                            # Show result
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                st.markdown("**Original**")
+                                st.image(image_rgb, use_container_width=True)
+                            with col2:
+                                st.markdown("**Cleaned**")
+                                st.image(cleaned_rgb, use_container_width=True)
+                            
+                            # Download button
+                            pil_image = Image.fromarray(cleaned_rgb)
+                            buf = io.BytesIO()
+                            pil_image.save(buf, format="PNG")
+                            byte_im = buf.getvalue()
+                            
+                            st.download_button(
+                                label="⬇️ Download Cleaned Image",
+                                data=byte_im,
+                                file_name="cleaned_image.png",
+                                mime="image/png"
+                            )
+                        else:
+                            st.warning("⚠️ No areas marked. Please draw circles over the dust spots.")
+                else:
+                    st.warning("⚠️ No areas marked. Please draw circles over the dust spots.")
         
-        # Display image with current markings
-        if st.session_state.manual_spots:
-            # Create preview with circles
-            preview = image_rgb.copy()
-            for spot in st.session_state.manual_spots:
-                x, y, r = spot
-                cv2.circle(preview, (x, y), r, (255, 0, 0), 2)
-                cv2.circle(preview, (x, y), 3, (255, 0, 0), -1)
-            st.session_state.preview_image = preview
-        else:
-            st.session_state.preview_image = image_rgb.copy()
-        
-        st.image(st.session_state.preview_image, caption="Your image with marked spots", use_container_width=True)
-        
-        # Input method selection
-        input_method = st.radio(
-            "How to mark spots:",
-            ["Enter coordinates manually", "Upload marked image"],
-            horizontal=True
-        )
-        
-        if input_method == "Enter coordinates manually":
-            st.markdown("""
-            **How to find coordinates:**
-            1. Open your image in any image viewer (Windows Photos, Preview on Mac, etc.)
-            2. Hover over a dust spot to see coordinates (usually shown at bottom)
-            3. Enter the x, y coordinates and radius below
+        except ImportError:
+            st.error("""
+            ❌ **streamlit-drawable-canvas is not installed.**
+            
+            Please install it by running:
+            ```
+            pip install streamlit-drawable-canvas
+            ```
+            
+            Then restart your Streamlit app.
             """)
             
-            col1, col2, col3, col4 = st.columns([2, 2, 2, 1])
+            # Fallback: coordinate input
+            st.markdown("---")
+            st.subheader("Alternative: Enter coordinates manually")
             
+            col1, col2 = st.columns(2)
             with col1:
-                x_coord = st.number_input("X coordinate", min_value=0, max_value=image.shape[1], value=0, step=1)
-            with col2:
-                y_coord = st.number_input("Y coordinate", min_value=0, max_value=image.shape[0], value=0, step=1)
-            with col3:
-                radius = st.number_input("Radius", min_value=5, max_value=200, value=brush_size, step=5)
-            with col4:
-                st.markdown("<br>", unsafe_allow_html=True)
-                if st.button("➕ Add Spot"):
-                    st.session_state.manual_spots.append((x_coord, y_coord, radius))
-                    st.rerun()
+                st.image(image_rgb, caption="Your image", use_container_width=True)
             
-            # Bulk input option
-            with st.expander("📝 Or enter multiple spots at once"):
+            with col2:
+                st.markdown("Enter dust spot locations (x, y, radius):")
                 coords_input = st.text_area(
                     "Format: x,y,radius (one per line)",
-                    placeholder="Example:\n500,300,40\n800,450,35\n1200,600,50",
+                    placeholder="Example:\n500,300,40\n800,450,35",
                     height=150
                 )
                 
-                if st.button("Add All Spots"):
+                if st.button("Remove Spots at Coordinates"):
                     if coords_input.strip():
                         try:
+                            mask = np.zeros(image.shape[:2], dtype=np.uint8)
+                            
                             for line in coords_input.strip().split('\n'):
                                 parts = line.strip().split(',')
                                 if len(parts) == 3:
-                                    x, y, r = map(int, parts)
-                                    st.session_state.manual_spots.append((x, y, r))
-                            st.rerun()
+                                    x, y, radius = map(int, parts)
+                                    cv2.circle(mask, (x, y), radius, 255, -1)
+                            
+                            if cv2.countNonZero(mask) > 0:
+                                cleaned_image = remove_dust_spots(image, mask)
+                                cleaned_rgb = cv2.cvtColor(cleaned_image, cv2.COLOR_BGR2RGB)
+                                
+                                st.success("✅ Spots removed!")
+                                st.image(cleaned_rgb, use_container_width=True)
+                                
+                                # Download
+                                pil_image = Image.fromarray(cleaned_rgb)
+                                buf = io.BytesIO()
+                                pil_image.save(buf, format="PNG")
+                                byte_im = buf.getvalue()
+                                
+                                st.download_button(
+                                    label="⬇️ Download",
+                                    data=byte_im,
+                                    file_name="cleaned_image.png",
+                                    mime="image/png"
+                                )
                         except Exception as e:
-                            st.error(f"Error parsing coordinates: {e}")
-        
-        else:  # Upload marked image
-            st.markdown("""
-            **Upload a marked version of your image:**
-            1. Download your original image below
-            2. Open it in any image editor (Paint, Photoshop, etc.)
-            3. Draw RED circles over dust spots
-            4. Upload the marked image here
-            """)
-            
-            # Download original for marking
-            pil_original = Image.fromarray(image_rgb)
-            buf = io.BytesIO()
-            pil_original.save(buf, format="PNG")
-            st.download_button(
-                label="⬇️ Download Original to Mark",
-                data=buf.getvalue(),
-                file_name="original_to_mark.png",
-                mime="image/png"
-            )
-            
-            marked_file = st.file_uploader(
-                "Upload your marked image (with red circles)",
-                type=["jpg", "jpeg", "png"],
-                key="marked_upload"
-            )
-            
-            if marked_file is not None:
-                # Read marked image
-                marked_bytes = np.asarray(bytearray(marked_file.read()), dtype=np.uint8)
-                marked_img = cv2.imdecode(marked_bytes, cv2.IMREAD_COLOR)
-                
-                # Detect red circles in the marked image
-                hsv = cv2.cvtColor(marked_img, cv2.COLOR_BGR2HSV)
-                
-                # Red color range
-                lower_red1 = np.array([0, 100, 100])
-                upper_red1 = np.array([10, 255, 255])
-                lower_red2 = np.array([160, 100, 100])
-                upper_red2 = np.array([180, 255, 255])
-                
-                mask1 = cv2.inRange(hsv, lower_red1, upper_red1)
-                mask2 = cv2.inRange(hsv, lower_red2, upper_red2)
-                red_mask = cv2.bitwise_or(mask1, mask2)
-                
-                # Find contours
-                contours, _ = cv2.findContours(red_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                
-                detected_count = 0
-                for contour in contours:
-                    area = cv2.contourArea(contour)
-                    if area > 50:  # Minimum size
-                        M = cv2.moments(contour)
-                        if M["m00"] != 0:
-                            cx = int(M["m10"] / M["m00"])
-                            cy = int(M["m01"] / M["m00"])
-                            r = int(np.sqrt(area / np.pi)) + 10
-                            st.session_state.manual_spots.append((cx, cy, r))
-                            detected_count += 1
-                
-                if detected_count > 0:
-                    st.success(f"✅ Detected {detected_count} marked spots!")
-                    st.rerun()
-                else:
-                    st.warning("⚠️ No red markings detected. Make sure to use bright red color.")
-        
-        # Show current spots
-        if st.session_state.manual_spots:
-            st.markdown(f"**📍 Marked spots: {len(st.session_state.manual_spots)}**")
-            
-            col1, col2 = st.columns([1, 4])
-            with col1:
-                if st.button("🗑️ Clear All"):
-                    st.session_state.manual_spots = []
-                    st.session_state.preview_image = None
-                    st.rerun()
-            
-            # Show list of spots with delete option
-            with st.expander("View/Edit marked spots"):
-                for idx, (x, y, r) in enumerate(st.session_state.manual_spots):
-                    col1, col2 = st.columns([4, 1])
-                    with col1:
-                        st.text(f"Spot {idx+1}: x={x}, y={y}, radius={r}")
-                    with col2:
-                        if st.button("🗑️", key=f"del_{idx}"):
-                            st.session_state.manual_spots.pop(idx)
-                            st.rerun()
-        
-        # Remove spots button
-        if st.session_state.manual_spots:
-            if st.button("🔧 Remove Marked Spots", type="primary"):
-                with st.spinner("Removing dust spots..."):
-                    # Create mask from manual spots
-                    mask = np.zeros(image.shape[:2], dtype=np.uint8)
-                    
-                    for x, y, r in st.session_state.manual_spots:
-                        cv2.circle(mask, (x, y), r, 255, -1)
-                    
-                    # Remove dust spots
-                    cleaned_image = remove_dust_spots(image, mask)
-                    cleaned_rgb = cv2.cvtColor(cleaned_image, cv2.COLOR_BGR2RGB)
-                    
-                    st.success("✅ Dust spots removed!")
-                    
-                    # Show result
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        st.markdown("**Original**")
-                        st.image(image_rgb, use_container_width=True)
-                    with col2:
-                        st.markdown("**Cleaned**")
-                        st.image(cleaned_rgb, use_container_width=True)
-                    
-                    # Download button
-                    pil_image = Image.fromarray(cleaned_rgb)
-                    buf = io.BytesIO()
-                    pil_image.save(buf, format="PNG")
-                    byte_im = buf.getvalue()
-                    
-                    st.download_button(
-                        label="⬇️ Download Cleaned Image",
-                        data=byte_im,
-                        file_name="cleaned_image.png",
-                        mime="image/png"
-                    )
-        else:
-            st.info("👆 Add some dust spot locations above to get started")
+                            st.error(f"Error: {e}")
 
 else:
     st.info("👆 Please upload an image to get started")
