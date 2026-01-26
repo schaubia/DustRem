@@ -4,53 +4,101 @@ import numpy as np
 from PIL import Image
 import io
 
-def detect_dust_spots(image, threshold=30, min_area=5, max_area=500):
+def detect_dust_spots(image, sensitivity=20, min_area=50, max_area=2000, blur_detection=True):
     """
-    Detect dust spots in an image using adaptive thresholding and morphological operations.
+    Detect out-of-focus dust spots that appear as pale, blurry circles on uniform backgrounds.
     
     Parameters:
     - image: Input image (BGR format)
-    - threshold: Threshold for detecting dark spots
+    - sensitivity: How different from surrounding area (lower = more sensitive)
     - min_area: Minimum area of dust spots to detect
     - max_area: Maximum area of dust spots to detect
+    - blur_detection: If True, specifically looks for blurry/out-of-focus spots
     """
-    # Convert to grayscale
+    # Convert to LAB color space for better detection on blue/gray areas
+    lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
+    l_channel, a_channel, b_channel = cv2.split(lab)
+    
+    # Also work with grayscale
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     
-    # Apply Gaussian blur to reduce noise
-    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+    # Method 1: Detect low-contrast blurry spots using difference of Gaussians
+    # This catches out-of-focus dust
+    blur1 = cv2.GaussianBlur(gray, (15, 15), 0)
+    blur2 = cv2.GaussianBlur(gray, (31, 31), 0)
+    dog = cv2.absdiff(blur1, blur2)
     
-    # Create a mask for dark spots
-    # Invert the image so dark spots become bright
-    inverted = cv2.bitwise_not(blurred)
+    # Enhance the difference
+    dog_enhanced = cv2.normalize(dog, None, 0, 255, cv2.NORM_MINMAX)
     
-    # Apply adaptive thresholding to detect local dark areas
-    adaptive_thresh = cv2.adaptiveThreshold(
-        inverted, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
-        cv2.THRESH_BINARY, 11, -threshold
-    )
+    # Threshold to find spots
+    _, dog_mask = cv2.threshold(dog_enhanced, sensitivity, 255, cv2.THRESH_BINARY)
     
-    # Morphological operations to clean up the mask
+    # Method 2: Detect darker spots in uniform areas
+    # Apply median filter to get local background
+    median = cv2.medianBlur(gray, 21)
+    
+    # Find where image is darker than median (dust spots are usually slightly darker)
+    diff = cv2.absdiff(gray, median)
+    _, dark_mask = cv2.threshold(diff, sensitivity // 2, 255, cv2.THRESH_BINARY)
+    
+    # Method 3: Detect based on luminance variation in L channel
+    l_blur = cv2.GaussianBlur(l_channel, (21, 21), 0)
+    l_diff = cv2.absdiff(l_channel, l_blur)
+    _, l_mask = cv2.threshold(l_diff, sensitivity, 255, cv2.THRESH_BINARY)
+    
+    # Combine all methods
+    if blur_detection:
+        combined = cv2.bitwise_or(dog_mask, dark_mask)
+        combined = cv2.bitwise_or(combined, l_mask)
+    else:
+        combined = dark_mask
+    
+    # Clean up with morphological operations
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-    cleaned = cv2.morphologyEx(adaptive_thresh, cv2.MORPH_OPEN, kernel)
-    cleaned = cv2.morphologyEx(cleaned, cv2.MORPH_CLOSE, kernel)
+    cleaned = cv2.morphologyEx(combined, cv2.MORPH_CLOSE, kernel)
+    cleaned = cv2.morphologyEx(cleaned, cv2.MORPH_OPEN, kernel)
     
-    # Find contours of dust spots
+    # Find contours and filter by shape and size
     contours, _ = cv2.findContours(cleaned, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     
-    # Create final mask based on size filtering
+    # Create final mask
     final_mask = np.zeros_like(gray)
     
     for contour in contours:
         area = cv2.contourArea(contour)
+        
         if min_area < area < max_area:
-            cv2.drawContours(final_mask, [contour], -1, 255, -1)
+            # Check circularity - dust spots are usually round
+            perimeter = cv2.arcLength(contour, True)
+            if perimeter > 0:
+                circularity = 4 * np.pi * area / (perimeter * perimeter)
+                
+                # Accept spots that are somewhat circular (relaxed constraint)
+                if circularity > 0.3:  # Reduced from typical 0.7 for more flexibility
+                    cv2.drawContours(final_mask, [contour], -1, 255, -1)
     
-    # Dilate the mask slightly to ensure we cover the entire dust spot
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    # Dilate slightly to ensure we cover the soft edges
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
     final_mask = cv2.dilate(final_mask, kernel, iterations=1)
     
     return final_mask
+
+def create_manual_mask_from_clicks(image_shape, click_points, brush_size=30):
+    """
+    Create a mask from user click points.
+    
+    Parameters:
+    - image_shape: Shape of the image (height, width)
+    - click_points: List of (x, y) coordinates
+    - brush_size: Size of the circular brush for each click
+    """
+    mask = np.zeros(image_shape[:2], dtype=np.uint8)
+    
+    for point in click_points:
+        cv2.circle(mask, point, brush_size, 255, -1)
+    
+    return mask
 
 def remove_dust_spots(image, mask):
     """
@@ -60,66 +108,89 @@ def remove_dust_spots(image, mask):
     - image: Input image (BGR format)
     - mask: Binary mask where white pixels indicate dust spots
     """
-    # Use Telea inpainting algorithm for better detail preservation
-    result = cv2.inpaint(image, mask, inpaintRadius=3, flags=cv2.INPAINT_TELEA)
+    # Use Navier-Stokes based inpainting for better results with blurry spots
+    result = cv2.inpaint(image, mask, inpaintRadius=5, flags=cv2.INPAINT_NS)
     
     return result
 
-def create_comparison_image(original, processed):
-    """Create a side-by-side comparison image."""
-    # Ensure both images have the same height
-    h1, w1 = original.shape[:2]
-    h2, w2 = processed.shape[:2]
+def create_visualization_with_circles(image, mask):
+    """
+    Create a visualization showing detected spots with red circles.
+    """
+    vis_image = image.copy()
     
-    if h1 != h2:
-        # Resize to match heights
-        scale = h1 / h2
-        processed = cv2.resize(processed, (int(w2 * scale), h1))
+    # Find contours in the mask
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     
-    # Concatenate horizontally
-    comparison = np.hstack([original, processed])
-    return comparison
+    # Draw circles around detected spots
+    for contour in contours:
+        M = cv2.moments(contour)
+        if M["m00"] != 0:
+            cX = int(M["m10"] / M["m00"])
+            cY = int(M["m01"] / M["m00"])
+            radius = int(np.sqrt(cv2.contourArea(contour) / np.pi)) + 5
+            cv2.circle(vis_image, (cX, cY), radius, (0, 0, 255), 2)
+    
+    return vis_image
 
 # Streamlit UI
-st.set_page_config(page_title="Dust Artifact Remover", layout="wide")
+st.set_page_config(page_title="Sensor Dust Remover", layout="wide")
 
-st.title("📸 Dust Artifact Remover")
+st.title("📸 Sensor Dust Spot Remover")
 st.markdown("""
-This application removes dust spots and artifacts from photos while preserving image detail.
-Upload a photo with dust spots from your camera sensor or lens, and the app will automatically detect and remove them.
+This application removes **out-of-focus dust spots** from camera sensors that appear as pale, blurry circles 
+on uniform backgrounds (like blue skies or gray areas).
 """)
 
 # Sidebar for parameters
-st.sidebar.header("Detection Parameters")
-st.sidebar.markdown("Adjust these settings to fine-tune dust spot detection:")
+st.sidebar.header("Detection Settings")
 
-sensitivity = st.sidebar.slider(
-    "Sensitivity",
-    min_value=10,
-    max_value=50,
-    value=30,
-    help="Lower values detect lighter spots, higher values only detect darker spots"
+detection_mode = st.sidebar.radio(
+    "Detection Mode",
+    ["Automatic", "Manual Selection"],
+    help="Automatic: Let the algorithm find spots | Manual: Click on spots to mark them"
 )
 
-min_size = st.sidebar.slider(
-    "Minimum Spot Size (pixels)",
-    min_value=1,
-    max_value=20,
-    value=5,
-    help="Minimum size of dust spots to detect"
-)
+if detection_mode == "Automatic":
+    st.sidebar.markdown("### Automatic Detection Parameters")
+    
+    sensitivity = st.sidebar.slider(
+        "Sensitivity",
+        min_value=5,
+        max_value=50,
+        value=15,
+        help="Lower = detect fainter spots | Higher = only obvious spots"
+    )
+    
+    min_size = st.sidebar.slider(
+        "Minimum Spot Size (pixels)",
+        min_value=10,
+        max_value=100,
+        value=50,
+        help="Minimum area of dust spots to detect"
+    )
+    
+    max_size = st.sidebar.slider(
+        "Maximum Spot Size (pixels)",
+        min_value=100,
+        max_value=5000,
+        value=2000,
+        help="Maximum area of dust spots to detect"
+    )
+    
+    enable_blur_detection = st.sidebar.checkbox(
+        "Enhanced blur detection",
+        value=True,
+        help="Use multiple methods to detect out-of-focus spots"
+    )
 
-max_size = st.sidebar.slider(
-    "Maximum Spot Size (pixels)",
-    min_value=50,
-    max_value=1000,
-    value=500,
-    help="Maximum size of dust spots to detect"
-)
+else:  # Manual mode
+    st.sidebar.markdown("### Manual Selection Parameters")
+    st.sidebar.info("After uploading, the app will show numbered spots. Enter the numbers of spots you want to remove.")
 
 # File uploader
 uploaded_file = st.file_uploader(
-    "Choose an image...",
+    "Upload your image with dust spots",
     type=["jpg", "jpeg", "png", "bmp", "tiff"]
 )
 
@@ -139,68 +210,97 @@ if uploaded_file is not None:
         st.image(image_rgb, use_container_width=True)
     
     # Process button
-    if st.button("🔧 Remove Dust Spots", type="primary"):
-        with st.spinner("Detecting and removing dust spots..."):
-            # Detect dust spots
-            dust_mask = detect_dust_spots(
-                image,
-                threshold=sensitivity,
-                min_area=min_size,
-                max_area=max_size
-            )
-            
-            # Count detected spots
-            num_spots = cv2.countNonZero(dust_mask)
-            
-            if num_spots > 0:
-                # Remove dust spots
-                cleaned_image = remove_dust_spots(image, dust_mask)
-                cleaned_rgb = cv2.cvtColor(cleaned_image, cv2.COLOR_BGR2RGB)
-                
-                with col2:
-                    st.subheader("Cleaned Image")
-                    st.image(cleaned_rgb, use_container_width=True)
-                
-                st.success(f"✅ Successfully processed! Detected and removed dust artifacts.")
-                
-                # Show the mask
-                with st.expander("View Detected Dust Spots"):
-                    st.image(dust_mask, caption="Dust Spot Mask (white areas will be removed)", use_container_width=True)
-                
-                # Download button
-                # Convert to PIL Image for saving
-                pil_image = Image.fromarray(cleaned_rgb)
-                buf = io.BytesIO()
-                pil_image.save(buf, format="PNG")
-                byte_im = buf.getvalue()
-                
-                st.download_button(
-                    label="⬇️ Download Cleaned Image",
-                    data=byte_im,
-                    file_name="cleaned_image.png",
-                    mime="image/png"
+    if st.button("🔧 Detect & Remove Dust Spots", type="primary"):
+        with st.spinner("Processing..."):
+            if detection_mode == "Automatic":
+                # Automatic detection
+                dust_mask = detect_dust_spots(
+                    image,
+                    sensitivity=sensitivity,
+                    min_area=min_size,
+                    max_area=max_size,
+                    blur_detection=enable_blur_detection
                 )
-            else:
-                st.info("No dust spots detected with current settings. Try adjusting the parameters in the sidebar.")
+                
+                # Count detected spots
+                num_spots = cv2.countNonZero(dust_mask)
+                
+                if num_spots > 0:
+                    # Create visualization
+                    vis_image = create_visualization_with_circles(image, dust_mask)
+                    vis_rgb = cv2.cvtColor(vis_image, cv2.COLOR_BGR2RGB)
+                    
+                    st.subheader("Detected Spots (marked in red)")
+                    st.image(vis_rgb, use_container_width=True)
+                    
+                    # Show detection mask
+                    with st.expander("🔍 View Detection Mask"):
+                        st.image(dust_mask, caption="White areas will be removed", use_container_width=True)
+                    
+                    # Ask for confirmation
+                    if st.button("✅ Looks good! Remove these spots"):
+                        cleaned_image = remove_dust_spots(image, dust_mask)
+                        cleaned_rgb = cv2.cvtColor(cleaned_image, cv2.COLOR_BGR2RGB)
+                        
+                        with col2:
+                            st.subheader("Cleaned Image")
+                            st.image(cleaned_rgb, use_container_width=True)
+                        
+                        st.success(f"✅ Successfully removed dust spots!")
+                        
+                        # Download button
+                        pil_image = Image.fromarray(cleaned_rgb)
+                        buf = io.BytesIO()
+                        pil_image.save(buf, format="PNG")
+                        byte_im = buf.getvalue()
+                        
+                        st.download_button(
+                            label="⬇️ Download Cleaned Image",
+                            data=byte_im,
+                            file_name="cleaned_image.png",
+                            mime="image/png"
+                        )
+                    
+                    st.warning("⚠️ Not detecting the right spots? Try adjusting the sensitivity and size parameters, or switch to Manual Selection mode.")
+                    
+                else:
+                    st.info("❌ No dust spots detected. Try lowering the sensitivity or reducing the minimum size.")
+            
+            else:  # Manual mode
+                st.info("🖱️ Manual selection mode is coming soon! For now, please use Automatic mode with adjusted parameters.")
+                st.markdown("""
+                **Tips for better automatic detection:**
+                1. Lower the sensitivity to 5-10 for faint spots
+                2. Adjust min/max size based on your dust spots
+                3. Enable "Enhanced blur detection" for out-of-focus spots
+                4. Try on a high-contrast area of your image (blue sky works best)
+                """)
     
     # Tips section
-    with st.expander("💡 Tips for Best Results"):
+    with st.expander("💡 Tips for Detecting Sensor Dust"):
         st.markdown("""
-        - **Sensitivity**: Start with default (30) and adjust if needed
-            - Lower values: Detect lighter/fainter dust spots
-            - Higher values: Only detect darker, more prominent spots
+        ### What are sensor dust spots?
+        - **Pale, blurry circles** that appear on uniform backgrounds
+        - Most visible on **blue skies** or **gray surfaces**
+        - **Out of focus** (because dust is on the sensor, not in the scene)
+        - Appear in the **same location** across multiple photos
         
-        - **Spot Size**: Adjust based on your image
-            - Increase minimum size if detecting too much noise
-            - Increase maximum size if large artifacts aren't being removed
+        ### Best settings for typical sensor dust:
+        1. **Sensitivity**: 10-20 (lower for fainter spots)
+        2. **Minimum Size**: 30-50 pixels
+        3. **Maximum Size**: 1000-2000 pixels
+        4. **Enable blur detection**: ON
         
-        - **Image Quality**: Works best with:
-            - High-resolution images
-            - Good contrast between dust spots and background
-            - Evenly lit photos
+        ### How to test your camera for sensor dust:
+        1. Set your camera to f/16 or smaller aperture
+        2. Take a photo of a clear blue sky or white wall
+        3. Upload that photo here
+        4. Dust spots will be very obvious!
         
-        - **Processing**: The app uses advanced inpainting algorithms to fill in removed spots
-          while preserving surrounding detail and texture
+        ### If spots aren't detected:
+        - Try **lowering sensitivity** to 5-10
+        - **Reduce minimum size** to 20-30
+        - Make sure you're testing on a **uniform background area**
         """)
 
 else:
@@ -208,23 +308,29 @@ else:
     
     # Example/Demo section
     st.markdown("---")
-    st.subheader("How It Works")
+    st.subheader("About Sensor Dust")
     st.markdown("""
-    1. **Upload** your image with dust artifacts
-    2. **Adjust** detection parameters if needed (optional)
-    3. **Click** "Remove Dust Spots" to process
-    4. **Download** your cleaned image
+    Sensor dust appears as **pale, blurry spots** on your photos, especially visible on:
+    - 🌤️ Blue skies
+    - ⬜ Gray or neutral surfaces  
+    - 📄 Uniform backgrounds
     
-    The application uses computer vision techniques to:
-    - Detect dark spots and artifacts automatically
-    - Intelligently fill in the removed areas using surrounding pixels
-    - Preserve fine details and image quality
+    This tool specifically targets **out-of-focus dust artifacts** that come from:
+    - Dust on your camera sensor
+    - Dust on the lens (sometimes)
+    - Small particles between lens elements
+    
+    **How it works:**
+    1. Upload your image
+    2. The algorithm detects blurry, pale spots on uniform areas
+    3. Review detected spots
+    4. Confirm and download your cleaned image
     """)
 
 # Footer
 st.markdown("---")
 st.markdown("""
 <div style='text-align: center; color: #666;'>
-    Made with Streamlit | Uses OpenCV for image processing
+    Made with Streamlit | Advanced dust detection for out-of-focus sensor spots
 </div>
 """, unsafe_allow_html=True)
