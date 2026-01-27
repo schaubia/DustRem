@@ -259,14 +259,23 @@ if uploaded_file is not None:
     
     if mode == "📝 Mark Examples & Train":
         st.header("Step 1: Mark Example Dust Spots")
-        st.markdown("Mark 3-5 dust spots so the AI can learn what to look for")
+        
+        if pre_marked is None:
+            st.markdown("Mark 3-5 dust spots so the AI can learn what to look for")
+        else:
+            st.markdown("✅ Using red circles from your uploaded image as training examples")
         
         # Show image with training spots
-        preview = image_rgb.copy()
-        for spot in st.session_state.training_spots:
-            x, y, r = spot
-            cv2.circle(preview, (x, y), r, (255, 0, 0), 2)
-            cv2.circle(preview, (x, y), 3, (255, 0, 0), -1)
+        if pre_marked is None:
+            # For clean uploads, show preview with added markers
+            preview = image_rgb.copy()
+            for spot in st.session_state.training_spots:
+                x, y, r = spot
+                cv2.circle(preview, (x, y), r, (255, 0, 0), 2)
+                cv2.circle(preview, (x, y), 3, (255, 0, 0), -1)
+        else:
+            # For pre-marked uploads, just show the original image (already has red circles)
+            preview = image_rgb.copy()
         
         col1, col2 = st.columns([2, 1])
         
@@ -313,45 +322,48 @@ if uploaded_file is not None:
                         st.success(f"✅ Added {count} examples!")
                         st.rerun()
         
-        # Upload marked image
-        with st.expander("📤 Or upload an image with red circles"):
-            marked_file = st.file_uploader("Upload marked image", type=["jpg", "jpeg", "png"], key="marked_train")
-            
-            if marked_file is not None:
-                marked_bytes = np.asarray(bytearray(marked_file.read()), dtype=np.uint8)
-                marked_img = cv2.imdecode(marked_bytes, cv2.IMREAD_COLOR)
+        # Only show upload option if user didn't already upload a pre-marked image
+        if pre_marked is None:
+            with st.expander("📤 Or upload an image with red circles"):
+                marked_file = st.file_uploader("Upload marked image", type=["jpg", "jpeg", "png"], key="marked_train")
                 
-                # Detect red areas
-                hsv = cv2.cvtColor(marked_img, cv2.COLOR_BGR2HSV)
-                lower_red1 = np.array([0, 50, 50])
-                upper_red1 = np.array([10, 255, 255])
-                lower_red2 = np.array([170, 50, 50])
-                upper_red2 = np.array([180, 255, 255])
-                
-                mask1 = cv2.inRange(hsv, lower_red1, upper_red1)
-                mask2 = cv2.inRange(hsv, lower_red2, upper_red2)
-                red_mask = cv2.bitwise_or(mask1, mask2)
-                
-                contours, _ = cv2.findContours(red_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                
-                if st.button("🔄 Import as Examples"):
-                    st.session_state.training_spots = []
-                    count = 0
+                if marked_file is not None:
+                    marked_bytes = np.asarray(bytearray(marked_file.read()), dtype=np.uint8)
+                    marked_img = cv2.imdecode(marked_bytes, cv2.IMREAD_COLOR)
                     
-                    for contour in contours:
-                        area = cv2.contourArea(contour)
-                        if area > 20:
-                            M = cv2.moments(contour)
-                            if M["m00"] != 0:
-                                cx = int(M["m10"] / M["m00"])
-                                cy = int(M["m01"] / M["m00"])
-                                r = max(int(np.sqrt(area / np.pi)) + 5, 50)
-                                st.session_state.training_spots.append((cx, cy, r))
-                                count += 1
+                    # Detect red areas
+                    hsv = cv2.cvtColor(marked_img, cv2.COLOR_BGR2HSV)
+                    lower_red1 = np.array([0, 50, 50])
+                    upper_red1 = np.array([10, 255, 255])
+                    lower_red2 = np.array([170, 50, 50])
+                    upper_red2 = np.array([180, 255, 255])
                     
-                    if count > 0:
-                        st.success(f"✅ Imported {count} training examples!")
-                        st.rerun()
+                    mask1 = cv2.inRange(hsv, lower_red1, upper_red1)
+                    mask2 = cv2.inRange(hsv, lower_red2, upper_red2)
+                    red_mask = cv2.bitwise_or(mask1, mask2)
+                    
+                    contours, _ = cv2.findContours(red_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                    
+                    if st.button("🔄 Import as Examples"):
+                        st.session_state.training_spots = []
+                        count = 0
+                        
+                        for contour in contours:
+                            area = cv2.contourArea(contour)
+                            if area > 20:
+                                M = cv2.moments(contour)
+                                if M["m00"] != 0:
+                                    cx = int(M["m10"] / M["m00"])
+                                    cy = int(M["m01"] / M["m00"])
+                                    r = max(int(np.sqrt(area / np.pi)) + 5, 50)
+                                    st.session_state.training_spots.append((cx, cy, r))
+                                    count += 1
+                        
+                        if count > 0:
+                            st.success(f"✅ Imported {count} training examples!")
+                            st.rerun()
+        else:
+            st.info("💡 Red circles were auto-detected from your uploaded image. You can add more examples above if needed.")
         
         # Training section
         if len(st.session_state.training_spots) >= 2:
