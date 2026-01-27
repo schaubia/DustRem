@@ -193,69 +193,13 @@ else:
     brush_size = st.sidebar.slider("Spot Radius", 10, 150, 40)
 
 # File uploader
-st.markdown("### Upload Your Image")
-
-upload_method = st.radio(
-    "Choose upload method:",
-    ["📷 Upload clean image", "🔴 Upload image with red circles already marked"],
-    horizontal=True
-)
-
-if upload_method == "📷 Upload clean image":
-    uploaded_file = st.file_uploader(
-        "Upload your image with dust spots", 
-        type=["jpg", "jpeg", "png", "bmp", "tiff"],
-        key="clean_upload"
-    )
-    pre_marked = None
-else:
-    uploaded_file = st.file_uploader(
-        "Upload image with RED circles marking dust spots",
-        type=["jpg", "jpeg", "png", "bmp", "tiff"],
-        key="marked_upload_main"
-    )
-    pre_marked = uploaded_file
+uploaded_file = st.file_uploader("Upload your image with dust spots", type=["jpg", "jpeg", "png", "bmp", "tiff"])
 
 if uploaded_file is not None:
     # Read the image
     file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
     image = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
     image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-    
-    # If pre-marked image was uploaded, auto-detect red circles
-    if pre_marked is not None and len(st.session_state.training_spots) == 0:
-        with st.spinner("Detecting red markings..."):
-            # Detect red areas
-            hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
-            lower_red1 = np.array([0, 50, 50])
-            upper_red1 = np.array([10, 255, 255])
-            lower_red2 = np.array([170, 50, 50])
-            upper_red2 = np.array([180, 255, 255])
-            
-            mask1 = cv2.inRange(hsv, lower_red1, upper_red1)
-            mask2 = cv2.inRange(hsv, lower_red2, upper_red2)
-            red_mask = cv2.bitwise_or(mask1, mask2)
-            
-            contours, _ = cv2.findContours(red_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            
-            detected_count = 0
-            for contour in contours:
-                area = cv2.contourArea(contour)
-                if area > 20:
-                    M = cv2.moments(contour)
-                    if M["m00"] != 0:
-                        cx = int(M["m10"] / M["m00"])
-                        cy = int(M["m01"] / M["m00"])
-                        r = max(int(np.sqrt(area / np.pi)) + 5, 50)
-                        st.session_state.training_spots.append((cx, cy, r))
-                        detected_count += 1
-            
-            if detected_count > 0:
-                st.success(f"✅ Auto-detected {detected_count} red-marked spots! These are now loaded as training examples.")
-                st.info("You can add more examples below, or proceed to train the AI.")
-            else:
-                st.warning("⚠️ No red markings detected. Make sure you used bright red color (RGB: 255, 0, 0). You can still add examples manually below.")
-    
     
     if mode == "📝 Mark Examples & Train":
         st.header("Step 1: Mark Example Dust Spots")
