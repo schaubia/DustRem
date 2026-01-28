@@ -4,6 +4,13 @@ import numpy as np
 from PIL import Image
 import io
 
+# Configure page and cache settings
+st.set_page_config(
+    page_title="ML Dust Spot Remover",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
 def create_training_patches(image, mask, patch_size=64):
     """Create training patches from user-marked spots."""
     height, width = image.shape[:2]
@@ -134,8 +141,6 @@ def remove_dust_spots(image, mask):
     return result
 
 # Streamlit UI
-st.set_page_config(page_title="ML Dust Spot Remover", layout="wide")
-
 st.title("🤖 Machine Learning Dust Spot Remover")
 st.markdown("""
 **Train the AI to recognize YOUR specific dust spots!**
