@@ -400,8 +400,8 @@ if uploaded_file is not None:
                         st.success(f"✅ Added {count} examples!")
                         st.rerun()
         
-        # Only show upload option if user didn't already upload a pre-marked image
-        if pre_marked is None:
+        # Only show upload option if user chose "Upload clean image" initially
+        if upload_method == "📷 Upload clean image":
             with st.expander("📤 Or upload an image with red circles"):
                 marked_file = st.file_uploader("Upload marked image", type=["jpg", "jpeg", "png"], key="marked_train")
                 
@@ -441,7 +441,7 @@ if uploaded_file is not None:
                             st.success(f"✅ Imported {count} training examples!")
                             st.rerun()
         else:
-            st.info("💡 Red circles were auto-detected from your uploaded image. You can add more examples above if needed.")
+            st.info("💡 Red circles were auto-detected from your uploaded image. You can add more examples using the options above if needed.")
         
         # Training section
         if len(st.session_state.training_spots) >= 2:
