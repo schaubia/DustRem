@@ -52,151 +52,137 @@ def create_training_patches(image, mask, patch_size=64):
 def detect_dust_ml_simple(image, positive_examples, negative_examples, sensitivity=0.5):
     """
     Simple ML-based detection using color/texture statistics from examples.
-    This is a lightweight approach that learns from your marked examples.
     Enhanced to detect ONLY spot-like circular features, not large areas.
     """
-    if not positive_examples:
-        return np.zeros(image.shape[:2], dtype=np.uint8)
+    if not positive_examples or image is None:
+        return np.zeros((100, 100), dtype=np.uint8)
     
-    # Convert to LAB color space for better color analysis
-    image_lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
-    image_gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    
-    # Extract features from positive examples (dust spots)
-    dust_features = []
-    for patch in positive_examples:
-        patch_gray = cv2.cvtColor(patch, cv2.COLOR_BGR2GRAY)
-        patch_lab = cv2.cvtColor(patch, cv2.COLOR_BGR2LAB)
+    try:
+        # Convert to LAB color space
+        image_lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
+        image_gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         
-        # Calculate statistics
-        mean_intensity = np.mean(patch_gray)
-        std_intensity = np.std(patch_gray)
-        mean_l = np.mean(patch_lab[:,:,0])
-        mean_a = np.mean(patch_lab[:,:,1])
-        mean_b = np.mean(patch_lab[:,:,2])
-        
-        # Calculate local contrast (important for spot detection)
-        center_region = patch_gray[patch_gray.shape[0]//4:3*patch_gray.shape[0]//4,
-                                   patch_gray.shape[1]//4:3*patch_gray.shape[1]//4]
-        center_mean = np.mean(center_region)
-        
-        dust_features.append({
-            'mean_intensity': mean_intensity,
-            'std_intensity': std_intensity,
-            'mean_l': mean_l,
-            'mean_a': mean_a,
-            'mean_b': mean_b,
-            'center_intensity': center_mean
-        })
-    
-    # Calculate average dust characteristics
-    avg_intensity = np.mean([f['mean_intensity'] for f in dust_features])
-    avg_std = np.mean([f['std_intensity'] for f in dust_features])
-    avg_l = np.mean([f['mean_l'] for f in dust_features])
-    avg_a = np.mean([f['mean_a'] for f in dust_features])
-    avg_b = np.mean([f['mean_b'] for f in dust_features])
-    avg_center = np.mean([f['center_intensity'] for f in dust_features])
-    
-    # Calculate variance ranges for stricter matching
-    std_intensity_range = np.std([f['mean_intensity'] for f in dust_features])
-    std_l_range = np.std([f['mean_l'] for f in dust_features])
-    
-    # Create sliding window detection with SMALLER windows for spot detection
-    # Smaller windows = more precise spot detection, avoid large areas
-    window_size = 24  # Reduced from 32 to focus on smaller spots
-    stride = 6  # Smaller stride for better precision
-    height, width = image.shape[:2]
-    
-    # Use circular Hough transform first to find candidate circular regions
-    blurred = cv2.GaussianBlur(image_gray, (9, 9), 2)
-    
-    # Detect circular features
-    circles = cv2.HoughCircles(
-        blurred,
-        cv2.HOUGH_GRADIENT,
-        dp=1,
-        minDist=15,  # Minimum distance between spots
-        param1=50,
-        param2=30,
-        minRadius=5,  # Minimum spot size
-        maxRadius=50  # Maximum spot size
-    )
-    
-    detection_map = np.zeros((height, width), dtype=np.float32)
-    
-    if circles is not None:
-        circles = np.uint16(np.around(circles))
-        
-        # Only check areas near detected circles
-        for circle in circles[0, :]:
-            cx, cy, radius = circle[0], circle[1], circle[2]
-            
-            # Extract region around circle
-            x1 = max(0, cx - radius - 5)
-            y1 = max(0, cy - radius - 5)
-            x2 = min(width, cx + radius + 5)
-            y2 = min(height, cy + radius + 5)
-            
-            if x2 - x1 < 10 or y2 - y1 < 10:
+        # Extract features from positive examples
+        dust_features = []
+        for patch in positive_examples:
+            try:
+                patch_gray = cv2.cvtColor(patch, cv2.COLOR_BGR2GRAY)
+                patch_lab = cv2.cvtColor(patch, cv2.COLOR_BGR2LAB)
+                
+                mean_intensity = np.mean(patch_gray)
+                std_intensity = np.std(patch_gray)
+                mean_l = np.mean(patch_lab[:,:,0])
+                mean_a = np.mean(patch_lab[:,:,1])
+                mean_b = np.mean(patch_lab[:,:,2])
+                
+                dust_features.append({
+                    'mean_intensity': mean_intensity,
+                    'std_intensity': std_intensity,
+                    'mean_l': mean_l,
+                    'mean_a': mean_a,
+                    'mean_b': mean_b
+                })
+            except:
                 continue
-            
-            # Extract window
-            window = image_gray[y1:y2, x1:x2]
-            window_lab = image_lab[y1:y2, x1:x2]
-            
-            # Calculate similarity to dust
-            win_intensity = np.mean(window)
-            win_std = np.std(window)
-            win_l = np.mean(window_lab[:,:,0])
-            win_a = np.mean(window_lab[:,:,1])
-            win_b = np.mean(window_lab[:,:,2])
-            
-            # Calculate distance from dust characteristics
-            intensity_diff = abs(win_intensity - avg_intensity)
-            std_diff = abs(win_std - avg_std)
-            l_diff = abs(win_l - avg_l)
-            a_diff = abs(win_a - avg_a)
-            b_diff = abs(win_b - avg_b)
-            
-            # Stricter matching - all features must be close
-            intensity_match = intensity_diff < (std_intensity_range * 2 + 15)
-            l_match = l_diff < (std_l_range * 2 + 15)
-            a_match = a_diff < 20
-            b_match = b_diff < 20
-            std_match = std_diff < 15
-            
-            # Composite score (lower is more similar to dust)
-            score = (intensity_diff/255 + std_diff/255 + 
-                    l_diff/255 + a_diff/255 + b_diff/255) / 5
-            
-            # Only mark if ALL conditions match AND score is good
-            if (intensity_match and l_match and a_match and b_match and 
-                std_match and score < sensitivity):
-                # Draw only the circular area, not the whole window
-                cv2.circle(detection_map, (cx, cy), radius, 1, -1)
-    
-    # Convert to binary mask
-    detection_map_uint8 = (detection_map * 255).astype(np.uint8)
-    _, binary_mask = cv2.threshold(detection_map_uint8, 127, 255, cv2.THRESH_BINARY)
-    
-    # Clean up with morphological operations - more aggressive to remove large areas
-    kernel_small = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-    binary_mask = cv2.morphologyEx(binary_mask, cv2.MORPH_OPEN, kernel_small, iterations=2)
-    
-    # Filter out large connected components (these are likely false positives)
-    contours, _ = cv2.findContours(binary_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    filtered_mask = np.zeros_like(binary_mask)
-    
-    for contour in contours:
-        area = cv2.contourArea(contour)
-        perimeter = cv2.arcLength(contour, True)
         
-        # Calculate circularity
-        if perimeter > 0:
-            circularity = 4 * np.pi * area / (perimeter * perimeter)
-        else:
-            circularity = 0
+        if not dust_features:
+            return np.zeros(image.shape[:2], dtype=np.uint8)
         
+        # Calculate averages
+        avg_intensity = np.mean([f['mean_intensity'] for f in dust_features])
+        avg_std = np.mean([f['std_intensity'] for f in dust_features])
+        avg_l = np.mean([f['mean_l'] for f in dust_features])
+        avg_a = np.mean([f['mean_a'] for f in dust_features])
+        avg_b = np.mean([f['mean_b'] for f in dust_features])
+        
+        std_intensity_range = np.std([f['mean_intensity'] for f in dust_features])
+        std_l_range = np.std([f['mean_l'] for f in dust_features])
+        
+        height, width = image.shape[:2]
+        detection_map = np.zeros((height, width), dtype=np.float32)
+        
+        # Use Hough circles to find candidates
+        blurred = cv2.GaussianBlur(image_gray, (9, 9), 2)
+        circles = cv2.HoughCircles(
+            blurred, cv2.HOUGH_GRADIENT, dp=1, minDist=15,
+            param1=50, param2=30, minRadius=5, maxRadius=50
+        )
+        
+        if circles is not None:
+            circles = np.uint16(np.around(circles))
+            
+            for circle in circles[0, :]:
+                cx, cy, radius = int(circle[0]), int(circle[1]), int(circle[2])
+                
+                x1 = max(0, cx - radius - 5)
+                y1 = max(0, cy - radius - 5)
+                x2 = min(width, cx + radius + 5)
+                y2 = min(height, cy + radius + 5)
+                
+                if x2 - x1 < 10 or y2 - y1 < 10:
+                    continue
+                
+                try:
+                    window = image_gray[y1:y2, x1:x2]
+                    window_lab = image_lab[y1:y2, x1:x2]
+                    
+                    if window.size == 0 or window_lab.size == 0:
+                        continue
+                    
+                    win_intensity = np.mean(window)
+                    win_std = np.std(window)
+                    win_l = np.mean(window_lab[:,:,0])
+                    win_a = np.mean(window_lab[:,:,1])
+                    win_b = np.mean(window_lab[:,:,2])
+                    
+                    intensity_diff = abs(win_intensity - avg_intensity)
+                    l_diff = abs(win_l - avg_l)
+                    a_diff = abs(win_a - avg_a)
+                    b_diff = abs(win_b - avg_b)
+                    std_diff = abs(win_std - avg_std)
+                    
+                    intensity_match = intensity_diff < (std_intensity_range * 2 + 15)
+                    l_match = l_diff < (std_l_range * 2 + 15)
+                    a_match = a_diff < 20
+                    b_match = b_diff < 20
+                    std_match = std_diff < 15
+                    
+                    score = (intensity_diff/255 + std_diff/255 + l_diff/255 + a_diff/255 + b_diff/255) / 5
+                    
+                    if (intensity_match and l_match and a_match and b_match and std_match and score < sensitivity):
+                        cv2.circle(detection_map, (cx, cy), radius, 1, -1)
+                except:
+                    continue
+        
+        # Convert to binary
+        detection_map_uint8 = (detection_map * 255).astype(np.uint8)
+        _, binary_mask = cv2.threshold(detection_map_uint8, 127, 255, cv2.THRESH_BINARY)
+        
+        # Clean up
+        kernel_small = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        binary_mask = cv2.morphologyEx(binary_mask, cv2.MORPH_OPEN, kernel_small, iterations=2)
+        
+        # Filter by size and shape
+        contours, _ = cv2.findContours(binary_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        filtered_mask = np.zeros_like(binary_mask)
+        
+        for contour in contours:
+            area = cv2.contourArea(contour)
+            perimeter = cv2.arcLength(contour, True)
+            
+            if perimeter > 0:
+                circularity = 4 * np.pi * area / (perimeter * perimeter)
+            else:
+                circularity = 0
+            
+            if area < 2500 and circularity > 0.4:
+                cv2.drawContours(filtered_mask, [contour], -1, 255, -1)
+        
+        return filtered_mask
+        
+    except Exception as e:
+        print(f"Error in detection: {e}")
+        return np.zeros(image.shape[:2], dtype=np.uint8)
         # Only keep small, circular features (actual spots)
         # Reject large areas or non-circular shapes
         if area < 2500 and circularity > 0.4:  # Max ~50x50 pixels, must be reasonably circular
