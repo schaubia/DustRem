@@ -85,6 +85,3 @@ The application uses:
 - Large images take longer to process
 - Consider resizing very large images before upload
 
-## License
-
-This is a demonstration application for educational and personal use.
