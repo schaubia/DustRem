@@ -52,8 +52,8 @@ This project provides **two different approaches** to remove dust spots from cam
 
 1. **Rename files for deployment:**
    ```bash
-   mv streamlit_app_unet.py streamlit_app.py
-   mv requirements_unet.txt requirements.txt
+   mv streamlit_app.py streamlit_app.py
+   mv requirements.txt requirements.txt
    ```
 
 2. **Push to GitHub and deploy:**
@@ -63,16 +63,11 @@ This project provides **two different approaches** to remove dust spots from cam
 
 ### For Local Testing:
 
-**Traditional CV:**
 ```bash
 pip install -r requirements.txt
 streamlit run streamlit_app.py
 ```
 
-**U-Net:**
-```bash
-pip install -r requirements_unet.txt
-streamlit run streamlit_app_unet.py
 ```
 
 ---
