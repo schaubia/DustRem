@@ -2,6 +2,11 @@
 
 A Streamlit application that automatically detects and removes dust spots and artifacts from photos caused by dust on camera sensors or lenses, while preserving image detail.
 
+## Clone:
+
+git clone https://github.com/Schaubia/DustRem.git
+
+
 ## Features
 
 - **Automatic Dust Detection**: Uses computer vision to identify dust spots
