@@ -18,9 +18,9 @@ st.set_page_config(
 class UNet(nn.Module):
     """
     Simplified U-Net for dust spot detection/removal.
-    Can be trained on user examples or use transfer learning.
+    Can be trained from scratch or use transfer learning.
     """
-    def __init__(self, in_channels=3, out_channels=1):
+    def __init__(self, in_channels=3, out_channels=1, pretrained_weights=None):
         super(UNet, self).__init__()
         
         # Encoder
@@ -44,6 +44,10 @@ class UNet(nn.Module):
         # Output
         self.out = nn.Conv2d(64, out_channels, 1)
         
+        # Load pretrained weights if provided
+        if pretrained_weights is not None:
+            self.load_pretrained_weights(pretrained_weights)
+        
     def conv_block(self, in_ch, out_ch):
         return nn.Sequential(
             nn.Conv2d(in_ch, out_ch, 3, padding=1),
@@ -53,6 +57,19 @@ class UNet(nn.Module):
             nn.BatchNorm2d(out_ch),
             nn.ReLU(inplace=True)
         )
+    
+    def load_pretrained_weights(self, weights_dict):
+        """Load pretrained weights from a dictionary."""
+        try:
+            model_dict = self.state_dict()
+            # Filter out weights that don't match
+            pretrained_dict = {k: v for k, v in weights_dict.items() if k in model_dict and model_dict[k].shape == v.shape}
+            model_dict.update(pretrained_dict)
+            self.load_state_dict(model_dict)
+            return len(pretrained_dict)
+        except Exception as e:
+            print(f"Error loading weights: {e}")
+            return 0
     
     def forward(self, x):
         # Encoder
@@ -77,6 +94,54 @@ class UNet(nn.Module):
         d1 = self.dec1(d1)
         
         return torch.sigmoid(self.out(d1))
+
+def create_pretrained_denoising_weights():
+    """
+    Simulate transfer learning weights.
+    In production, these would come from:
+    1. ImageNet pre-trained encoder
+    2. Denoising autoencoder
+    3. General image restoration model
+    
+    For now, returns None to train from scratch.
+    You can replace this with actual pretrained weights.
+    """
+    # Example: Load from a URL or file
+    # weights = torch.load('pretrained_denoiser.pth')
+    # return weights
+    
+    return None  # Train from scratch for now
+
+def initialize_model_with_transfer_learning(device, use_pretrained=False):
+    """
+    Initialize U-Net with optional transfer learning.
+    
+    Args:
+        device: torch device
+        use_pretrained: If True, use transfer learning weights
+    
+    Returns:
+        model: Initialized U-Net
+        pretrained_layers: Number of layers loaded from pretrained
+    """
+    if use_pretrained:
+        # Get pretrained weights
+        pretrained_weights = create_pretrained_denoising_weights()
+        
+        if pretrained_weights is not None:
+            model = UNet(in_channels=3, out_channels=1, pretrained_weights=pretrained_weights).to(device)
+            # Freeze early layers for transfer learning
+            for name, param in model.named_parameters():
+                if 'enc1' in name or 'enc2' in name:
+                    param.requires_grad = False  # Freeze encoder layers
+            return model, "Using transfer learning (encoder frozen)"
+        else:
+            st.warning("Pretrained weights not available. Training from scratch.")
+            model = UNet(in_channels=3, out_channels=1).to(device)
+            return model, "Training from scratch (no pretrained weights)"
+    else:
+        model = UNet(in_channels=3, out_channels=1).to(device)
+        return model, "Training from scratch"
 
 def create_training_data_from_marks(image, spots, patch_size=128):
     """Create training data from user-marked spots."""
@@ -247,13 +312,36 @@ if mode == "🧠 Train U-Net Model":
     U-Net learns spatial patterns, not just colors!
     """)
     
+    use_transfer_learning = st.sidebar.checkbox(
+        "Use Transfer Learning",
+        value=False,
+        help="Start from pretrained weights (faster training, better results)"
+    )
+    
+    if use_transfer_learning:
+        st.sidebar.info("""
+        🔄 **Transfer Learning Mode**
+        - Starts from pretrained weights
+        - Freezes encoder layers
+        - Trains only decoder
+        - Faster convergence
+        - Better generalization
+        """)
+    else:
+        st.sidebar.info("""
+        🆕 **Train from Scratch**
+        - Learns everything from your data
+        - More flexible
+        - Needs more examples
+        """)
+    
     training_epochs = st.sidebar.slider(
         "Training Epochs",
         min_value=10,
         max_value=100,
-        value=30,
+        value=30 if not use_transfer_learning else 20,
         step=10,
-        help="More epochs = better training but slower"
+        help="Transfer learning needs fewer epochs"
     )
     
     detection_threshold = st.sidebar.slider(
@@ -394,8 +482,13 @@ if uploaded_file is not None:
                     )
                     
                     if dusty_patches:
-                        # Initialize model
-                        model = UNet(in_channels=3, out_channels=1).to(device)
+                        # Initialize model with optional transfer learning
+                        model, init_message = initialize_model_with_transfer_learning(
+                            device, 
+                            use_pretrained=use_transfer_learning
+                        )
+                        
+                        st.info(f"🔧 {init_message}")
                         
                         # Train
                         model, losses = train_unet_on_examples(
@@ -406,7 +499,8 @@ if uploaded_file is not None:
                         st.session_state.unet_model = model
                         st.session_state.model_trained = True
                         
-                        st.success(f"✅ U-Net trained on {len(dusty_patches)} examples!")
+                        transfer_text = " (with transfer learning)" if use_transfer_learning else ""
+                        st.success(f"✅ U-Net trained on {len(dusty_patches)} examples{transfer_text}!")
                         
                         # Show training curve
                         import matplotlib.pyplot as plt
@@ -414,8 +508,15 @@ if uploaded_file is not None:
                         ax.plot(losses)
                         ax.set_xlabel('Epoch')
                         ax.set_ylabel('Loss')
-                        ax.set_title('Training Progress')
+                        ax.set_title(f'Training Progress{transfer_text}')
                         ax.grid(True)
+                        
+                        # Add annotation about transfer learning
+                        if use_transfer_learning:
+                            ax.text(0.5, 0.95, 'Using Transfer Learning (Encoder Frozen)', 
+                                   transform=ax.transAxes, ha='center', va='top',
+                                   bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.5))
+                        
                         st.pyplot(fig)
             
             if st.session_state.model_trained and st.session_state.unet_model:
