@@ -9,7 +9,7 @@ This project provides **two different approaches** to remove dust spots from cam
 - **Requirements:** `requirements.txt`
 - **Technology:** OpenCV + Simple ML (color/texture matching)
 
-### Version 2: Deep Learning U-Net 🆕
+### Deep Learning U-Net 🆕
 - **File:** `streamlit_app_unet.py`
 - **Requirements:** `requirements_unet.txt`
 - **Technology:** PyTorch + U-Net neural network
@@ -165,4 +165,3 @@ Based on typical sensor dust removal:
 
 ---
 
-Choose the version that best fits your needs!
