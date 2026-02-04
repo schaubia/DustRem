@@ -44,7 +44,6 @@ This project provides **two different approaches** to remove dust spots from cam
 
 Transfer learning allows the U-Net model to start with pretrained knowledge instead of learning from scratch.
 
-**Analogy:** It's like hiring an experienced photographer who already knows about images, vs. training a complete beginner.
 
 ### Two Training Modes:
 
