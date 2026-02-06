@@ -581,7 +581,7 @@ if uploaded_file is not None:
                 
                 other_file = st.file_uploader(
                     "Upload another image",
-                    type=["jpg", "jpeg", "png", "bmp", "tiff"],
+                    type=["jpg", "jpeg", "png"],
                     key="other"
                 )
                 
