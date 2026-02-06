@@ -11,6 +11,7 @@ import torch.nn.functional as F
 st.set_page_config(
     page_title="Deep Learning Dust Remover",
     layout="wide",
+    page_icon="📸",
     initial_sidebar_state="expanded"
 )
 
