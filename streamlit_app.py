@@ -3,659 +3,467 @@ import cv2
 import numpy as np
 from PIL import Image
 import io
+import matplotlib.pyplot as plt
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-# Configure page
+# ── Page config ──────────────────────────────────────────────────────────────
 st.set_page_config(
     page_title="Deep Learning Dust Remover",
     layout="wide",
     page_icon="📸",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="expanded",
 )
 
-# Simple U-Net Model
+
+# ── U-Net model ───────────────────────────────────────────────────────────────
 class UNet(nn.Module):
-    """
-    Simplified U-Net for dust spot detection/removal.
-    Can be trained from scratch or use transfer learning.
-    """
-    def __init__(self, in_channels=3, out_channels=1, pretrained_weights=None):
-        super(UNet, self).__init__()
-        
-        # Encoder
-        self.enc1 = self.conv_block(in_channels, 64)
-        self.enc2 = self.conv_block(64, 128)
-        self.enc3 = self.conv_block(128, 256)
-        
-        # Bottleneck
-        self.bottleneck = self.conv_block(256, 512)
-        
-        # Decoder
+    def __init__(self, in_channels=3, out_channels=1):
+        super().__init__()
+        self.enc1 = self._block(in_channels, 64)
+        self.enc2 = self._block(64, 128)
+        self.enc3 = self._block(128, 256)
+        self.bottleneck = self._block(256, 512)
         self.upconv3 = nn.ConvTranspose2d(512, 256, 2, stride=2)
-        self.dec3 = self.conv_block(512, 256)
-        
+        self.dec3 = self._block(512, 256)
         self.upconv2 = nn.ConvTranspose2d(256, 128, 2, stride=2)
-        self.dec2 = self.conv_block(256, 128)
-        
+        self.dec2 = self._block(256, 128)
         self.upconv1 = nn.ConvTranspose2d(128, 64, 2, stride=2)
-        self.dec1 = self.conv_block(128, 64)
-        
-        # Output
+        self.dec1 = self._block(128, 64)
         self.out = nn.Conv2d(64, out_channels, 1)
-        
-        # Load pretrained weights if provided
-        if pretrained_weights is not None:
-            self.load_pretrained_weights(pretrained_weights)
-        
-    def conv_block(self, in_ch, out_ch):
+
+    def _block(self, ic, oc):
         return nn.Sequential(
-            nn.Conv2d(in_ch, out_ch, 3, padding=1),
-            nn.BatchNorm2d(out_ch),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(out_ch, out_ch, 3, padding=1),
-            nn.BatchNorm2d(out_ch),
-            nn.ReLU(inplace=True)
+            nn.Conv2d(ic, oc, 3, padding=1), nn.BatchNorm2d(oc), nn.ReLU(inplace=True),
+            nn.Conv2d(oc, oc, 3, padding=1), nn.BatchNorm2d(oc), nn.ReLU(inplace=True),
         )
-    
-    def load_pretrained_weights(self, weights_dict):
-        """Load pretrained weights from a dictionary."""
-        try:
-            model_dict = self.state_dict()
-            # Filter out weights that don't match
-            pretrained_dict = {k: v for k, v in weights_dict.items() if k in model_dict and model_dict[k].shape == v.shape}
-            model_dict.update(pretrained_dict)
-            self.load_state_dict(model_dict)
-            return len(pretrained_dict)
-        except Exception as e:
-            print(f"Error loading weights: {e}")
-            return 0
-    
+
     def forward(self, x):
-        # Encoder
         e1 = self.enc1(x)
         e2 = self.enc2(F.max_pool2d(e1, 2))
         e3 = self.enc3(F.max_pool2d(e2, 2))
-        
-        # Bottleneck
-        b = self.bottleneck(F.max_pool2d(e3, 2))
-        
-        # Decoder with skip connections
-        d3 = self.upconv3(b)
-        d3 = torch.cat([d3, e3], dim=1)
-        d3 = self.dec3(d3)
-        
-        d2 = self.upconv2(d3)
-        d2 = torch.cat([d2, e2], dim=1)
-        d2 = self.dec2(d2)
-        
-        d1 = self.upconv1(d2)
-        d1 = torch.cat([d1, e1], dim=1)
-        d1 = self.dec1(d1)
-        
+        b  = self.bottleneck(F.max_pool2d(e3, 2))
+        d3 = self.dec3(torch.cat([self.upconv3(b),  e3], 1))
+        d2 = self.dec2(torch.cat([self.upconv2(d3), e2], 1))
+        d1 = self.dec1(torch.cat([self.upconv1(d2), e1], 1))
         return torch.sigmoid(self.out(d1))
 
-def create_pretrained_denoising_weights():
-    """
-    Simulate transfer learning weights.
-    In production, these would come from:
-    1. ImageNet pre-trained encoder
-    2. Denoising autoencoder
-    3. General image restoration model
-    
-    For now, returns None to train from scratch.
-    You can replace this with actual pretrained weights.
-    """
-    # Example: Load from a URL or file
-    # weights = torch.load('pretrained_denoiser.pth')
-    # return weights
-    
-    return None  # Train from scratch for now
 
-def initialize_model_with_transfer_learning(device, use_pretrained=False):
-    """
-    Initialize U-Net with optional transfer learning.
-    
-    Args:
-        device: torch device
-        use_pretrained: If True, use transfer learning weights
-    
-    Returns:
-        model: Initialized U-Net
-        pretrained_layers: Number of layers loaded from pretrained
-    """
-    if use_pretrained:
-        # Get pretrained weights
-        pretrained_weights = create_pretrained_denoising_weights()
-        
-        if pretrained_weights is not None:
-            model = UNet(in_channels=3, out_channels=1, pretrained_weights=pretrained_weights).to(device)
-            # Freeze early layers for transfer learning
-            for name, param in model.named_parameters():
-                if 'enc1' in name or 'enc2' in name:
-                    param.requires_grad = False  # Freeze encoder layers
-            return model, "Using transfer learning (encoder frozen)"
-        else:
-            st.warning("Pretrained weights not available. Training from scratch.")
-            model = UNet(in_channels=3, out_channels=1).to(device)
-            return model, "Training from scratch (no pretrained weights)"
-    else:
-        model = UNet(in_channels=3, out_channels=1).to(device)
-        return model, "Training from scratch"
-
-def create_training_data_from_marks(image, spots, patch_size=128):
-    """Create training data from user-marked spots."""
-    height, width = image.shape[:2]
-    
-    # Create mask from marked spots
-    mask = np.zeros((height, width), dtype=np.uint8)
+# ── Helper functions ──────────────────────────────────────────────────────────
+def create_training_data(image, spots, patch_size=128):
+    h, w = image.shape[:2]
+    full_mask = np.zeros((h, w), dtype=np.uint8)
     for x, y, r in spots:
-        cv2.circle(mask, (x, y), r, 255, -1)
-    
-    # Extract patches
-    patches_clean = []
-    patches_dusty = []
-    masks = []
-    
-    for spot in spots:
-        x, y, r = spot
-        
-        # Extract patch around spot
+        cv2.circle(full_mask, (x, y), r, 255, -1)
+
+    dusty_patches, mask_patches = [], []
+    for x, y, r in spots:
         x1 = max(0, x - patch_size // 2)
         y1 = max(0, y - patch_size // 2)
-        x2 = min(width, x1 + patch_size)
-        y2 = min(height, y1 + patch_size)
-        
-        # Ensure patch is correct size
-        if x2 - x1 == patch_size and y2 - y1 == patch_size:
-            dusty_patch = image[y1:y2, x1:x2].copy()
-            mask_patch = mask[y1:y2, x1:x2].copy()
-            
-            # Simulate clean version by inpainting
-            clean_patch = cv2.inpaint(dusty_patch, mask_patch, 3, cv2.INPAINT_TELEA)
-            
-            patches_dusty.append(dusty_patch)
-            patches_clean.append(clean_patch)
-            masks.append(mask_patch)
-    
-    return patches_dusty, patches_clean, masks
+        x2 = x1 + patch_size
+        y2 = y1 + patch_size
+        if x2 > w or y2 > h:
+            continue
+        dusty_patches.append(image[y1:y2, x1:x2].copy())
+        mask_patches.append(full_mask[y1:y2, x1:x2].copy())
+    return dusty_patches, mask_patches
 
-def train_unet_on_examples(model, dusty_patches, clean_patches, masks, device, epochs=50):
-    """Train U-Net on user examples."""
-    if not dusty_patches:
-        return model, []
-    
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+
+def train_unet(model, dusty_patches, mask_patches, device, epochs, freeze_encoder=False):
+    if freeze_encoder:
+        for name, p in model.named_parameters():
+            if "enc1" in name or "enc2" in name:
+                p.requires_grad = False
+
+    optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=1e-3)
     criterion = nn.BCELoss()
-    
-    losses = []
     model.train()
-    
-    progress_bar = st.progress(0)
-    status_text = st.empty()
-    
+    losses = []
+    bar = st.progress(0)
+    txt = st.empty()
+
     for epoch in range(epochs):
-        epoch_loss = 0
-        
-        for dusty, mask in zip(dusty_patches, masks):
-            # Convert to tensors
-            dusty_tensor = torch.from_numpy(dusty.transpose(2, 0, 1)).float().unsqueeze(0).to(device) / 255.0
-            mask_tensor = torch.from_numpy(mask).float().unsqueeze(0).unsqueeze(0).to(device) / 255.0
-            
-            # Forward pass
+        total = 0.0
+        for dusty, mask in zip(dusty_patches, mask_patches):
+            inp = torch.from_numpy(dusty.transpose(2, 0, 1)).float().unsqueeze(0).to(device) / 255.0
+            tgt = torch.from_numpy(mask).float().unsqueeze(0).unsqueeze(0).to(device) / 255.0
             optimizer.zero_grad()
-            output = model(dusty_tensor)
-            
-            # Loss
-            loss = criterion(output, mask_tensor)
-            
-            # Backward pass
+            loss = criterion(model(inp), tgt)
             loss.backward()
             optimizer.step()
-            
-            epoch_loss += loss.item()
-        
-        avg_loss = epoch_loss / len(dusty_patches)
-        losses.append(avg_loss)
-        
-        # Update progress
-        progress = (epoch + 1) / epochs
-        progress_bar.progress(progress)
-        status_text.text(f"Training: Epoch {epoch+1}/{epochs}, Loss: {avg_loss:.4f}")
-    
-    progress_bar.empty()
-    status_text.empty()
-    
+            total += loss.item()
+        avg = total / max(len(dusty_patches), 1)
+        losses.append(avg)
+        bar.progress((epoch + 1) / epochs)
+        txt.text(f"Epoch {epoch+1}/{epochs}  loss={avg:.4f}")
+
+    bar.empty(); txt.empty()
     model.eval()
     return model, losses
 
-def detect_dust_with_unet(model, image, device, threshold=0.5):
-    """Use trained U-Net to detect dust spots."""
-    try:
-        height, width = image.shape[:2]
-        
-        # Prepare image
-        image_tensor = torch.from_numpy(image.transpose(2, 0, 1)).float().unsqueeze(0).to(device) / 255.0
-        
-        # Ensure dimensions are divisible by 8 for U-Net
-        pad_h = (8 - height % 8) % 8
-        pad_w = (8 - width % 8) % 8
-        
-        if pad_h > 0 or pad_w > 0:
-            image_tensor = F.pad(image_tensor, (0, pad_w, 0, pad_h), mode='reflect')
-        
-        # Inference
-        with torch.no_grad():
-            output = model(image_tensor)
-        
-        # Remove padding
-        if pad_h > 0 or pad_w > 0:
-            output = output[:, :, :height, :width]
-        
-        # Convert to mask
-        mask = (output.squeeze().cpu().numpy() * 255).astype(np.uint8)
-        _, binary_mask = cv2.threshold(mask, int(threshold * 255), 255, cv2.THRESH_BINARY)
-        
-        return binary_mask
-        
-    except Exception as e:
-        st.error(f"Error in U-Net detection: {e}")
-        return np.zeros(image.shape[:2], dtype=np.uint8)
 
-def remove_dust_spots(image, mask):
-    """Remove dust spots using inpainting."""
-    result = cv2.inpaint(image, mask, inpaintRadius=7, flags=cv2.INPAINT_NS)
-    return result
+def detect_with_unet(model, image, device, threshold=0.5):
+    h, w = image.shape[:2]
+    pad_h = (8 - h % 8) % 8
+    pad_w = (8 - w % 8) % 8
+    t = torch.from_numpy(image.transpose(2, 0, 1)).float().unsqueeze(0).to(device) / 255.0
+    if pad_h or pad_w:
+        t = F.pad(t, (0, pad_w, 0, pad_h), mode="reflect")
+    with torch.no_grad():
+        out = model(t)
+    out = out[:, :, :h, :w]
+    mask = (out.squeeze().cpu().numpy() * 255).astype(np.uint8)
+    _, binary = cv2.threshold(mask, int(threshold * 255), 255, cv2.THRESH_BINARY)
+    return binary
 
-# Streamlit UI
-st.title("🤖 Deep Learning Dust Remover (U-Net)")
-st.markdown("""
-**Train a U-Net neural network to detect and remove YOUR specific dust spots!**
 
-This version uses deep learning instead of traditional computer vision for more accurate detection.
-""")
+def inpaint(image, mask, radius=7):
+    return cv2.inpaint(image, mask, inpaintRadius=radius, flags=cv2.INPAINT_NS)
 
-# Initialize session state
-if 'training_spots' not in st.session_state:
-    st.session_state.training_spots = []
-if 'unet_model' not in st.session_state:
-    st.session_state.unet_model = None
-if 'model_trained' not in st.session_state:
-    st.session_state.model_trained = False
-if 'cleaned_image' not in st.session_state:
-    st.session_state.cleaned_image = None
 
-# Check for GPU
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-if device.type == 'cuda':
-    st.sidebar.success(f"🚀 GPU Detected: {torch.cuda.get_device_name(0)}")
+def detect_red_circles(image_bgr):
+    hsv = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2HSV)
+    m1 = cv2.inRange(hsv, np.array([0, 50, 50]),   np.array([10, 255, 255]))
+    m2 = cv2.inRange(hsv, np.array([170, 50, 50]), np.array([180, 255, 255]))
+    red = cv2.bitwise_or(m1, m2)
+    contours, _ = cv2.findContours(red, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    spots = []
+    for c in contours:
+        area = cv2.contourArea(c)
+        if area < 20:
+            continue
+        M = cv2.moments(c)
+        if M["m00"] == 0:
+            continue
+        cx = int(M["m10"] / M["m00"])
+        cy = int(M["m01"] / M["m00"])
+        r  = max(int(np.sqrt(area / np.pi)) + 5, 20)
+        spots.append((cx, cy, r))
+    return spots
+
+
+def overlay_spots(image_rgb, spots, color=(255, 50, 50)):
+    vis = image_rgb.copy()
+    for x, y, r in spots:
+        cv2.circle(vis, (x, y), r, color, 2)
+        cv2.circle(vis, (x, y), 3, color, -1)
+    return vis
+
+
+# ── Session-state initialisation ──────────────────────────────────────────────
+def _init():
+    defaults = dict(
+        spots=[],
+        model=None,
+        trained=False,
+        detected_mask=None,
+        cleaned_rgb=None,
+        image_bgr=None,
+        image_rgb=None,
+    )
+    for k, v in defaults.items():
+        if k not in st.session_state:
+            st.session_state[k] = v
+
+_init()
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+# ── Sidebar ────────────────────────────────────────────────────────────────────
+st.sidebar.header("⚙️ Settings")
+
+if device.type == "cuda":
+    st.sidebar.success(f"🚀 GPU: {torch.cuda.get_device_name(0)}")
 else:
-    st.sidebar.info("💻 Using CPU (slower training)")
-
-# Sidebar
-st.sidebar.header("Deep Learning Settings")
+    st.sidebar.info("💻 CPU mode (training may be slow)")
 
 mode = st.sidebar.radio(
-    "Choose mode",
-    ["🧠 Train U-Net Model", "✏️ Manual Removal Only"],
-    help="Train neural network or manual marking"
+    "Mode",
+    ["🧠 Train U-Net", "✏️ Manual Removal"],
+    help="Train the neural network, or mark and remove spots manually",
 )
 
-if mode == "🧠 Train U-Net Model":
-    st.sidebar.markdown("""
-    ### How it works:
-    1. **Mark dust spots** (3-10 examples)
-    2. **Train U-Net** neural network
-    3. **AI detects** all similar spots
-    4. **Remove** detected spots
-    
-    U-Net learns spatial patterns, not just colors!
-    """)
-    
-    use_transfer_learning = st.sidebar.checkbox(
-        "Use Transfer Learning",
+# These variables are always defined to avoid NameErrors
+use_tl        = False
+epochs        = 30
+det_threshold = 0.5
+brush_size    = 40
+
+if mode == "🧠 Train U-Net":
+    use_tl = st.sidebar.checkbox(
+        "Use Transfer Learning (freeze encoder)",
         value=False,
-        help="Start from pretrained weights (faster training, better results)"
+        help="Faster convergence, better results with few examples",
     )
-    
-    if use_transfer_learning:
-        st.sidebar.info("""
-        🔄 **Transfer Learning Mode**
-        - Starts from pretrained weights
-        - Freezes encoder layers
-        - Trains only decoder
-        - Faster convergence
-        - Better generalization
-        """)
-    else:
-        st.sidebar.info("""
-        🆕 **Train from Scratch**
-        - Learns everything from your data
-        - More flexible
-        - Needs more examples
-        """)
-    
-    training_epochs = st.sidebar.slider(
-        "Training Epochs",
-        min_value=10,
-        max_value=100,
-        value=30 if not use_transfer_learning else 20,
-        step=10,
-        help="Transfer learning needs fewer epochs"
-    )
-    
-    detection_threshold = st.sidebar.slider(
-        "Detection Threshold",
-        min_value=0.1,
-        max_value=0.9,
-        value=0.5,
-        step=0.05,
-        help="Lower = detect more spots"
-    )
+    epochs = st.sidebar.slider("Training Epochs", 10, 100, 20 if use_tl else 30, 10)
+    det_threshold = st.sidebar.slider("Detection Threshold", 0.1, 0.9, 0.5, 0.05,
+                                      help="Lower → detect more spots")
+    st.sidebar.markdown("""
+    **Workflow**
+    1. Upload image → mark 3–10 spots
+    2. Train U-Net
+    3. Detect all similar spots
+    4. Remove & download
+    """)
 else:
-    st.sidebar.markdown("### Manual mode")
-    brush_size = st.sidebar.slider("Spot Radius", 10, 150, 40)
+    brush_size = st.sidebar.slider("Spot Radius", 10, 200, 50)
+    st.sidebar.markdown("""
+    **Workflow**
+    1. Upload image
+    2. Enter spot coordinates
+    3. Remove & download
+    """)
 
-# File uploader
-st.markdown("### Upload Your Image")
 
+# ── Main title ─────────────────────────────────────────────────────────────────
+st.title("📸 Deep Learning Dust Spot Remover")
+st.caption("U-Net neural network learns YOUR dust patterns for precise removal.")
+
+
+# ── Upload ─────────────────────────────────────────────────────────────────────
+st.subheader("1 · Upload Image")
 upload_method = st.radio(
-    "Choose upload method:",
-    ["📷 Upload clean image", "🔴 Upload image with red circles already marked"],
-    horizontal=True
+    "Upload method:",
+    ["📷 Clean image (mark spots manually)", "🔴 Image already marked with red circles"],
+    horizontal=True,
+)
+pre_marked = upload_method.startswith("🔴")
+
+uploaded = st.file_uploader(
+    "Choose an image",
+    type=["jpg", "jpeg", "png", "bmp", "tiff"],
+    key="uploader",
 )
 
-if upload_method == "📷 Upload clean image":
-    uploaded_file = st.file_uploader(
-        "Upload your image with dust spots",
-        type=["jpg", "jpeg", "png", "bmp", "tiff"],
-        key="clean_upload"
-    )
-    pre_marked = None
-else:
-    uploaded_file = st.file_uploader(
-        "Upload image with RED circles marking dust spots",
-        type=["jpg", "jpeg", "png", "bmp", "tiff"],
-        key="marked_upload_main"
-    )
-    pre_marked = uploaded_file
+if uploaded:
+    raw = np.asarray(bytearray(uploaded.read()), dtype=np.uint8)
+    bgr = cv2.imdecode(raw, cv2.IMREAD_COLOR)
+    rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+    # Only reset when a new file arrives
+    if st.session_state.image_bgr is None or bgr.shape != st.session_state.image_bgr.shape:
+        st.session_state.image_bgr    = bgr
+        st.session_state.image_rgb    = rgb
+        st.session_state.spots        = []
+        st.session_state.trained      = False
+        st.session_state.model        = None
+        st.session_state.detected_mask = None
+        st.session_state.cleaned_rgb  = None
 
-if uploaded_file is not None:
-    # Read image
-    file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
-    image = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
-    image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-    
-    # Auto-detect red circles if pre-marked
-    if pre_marked is not None and len(st.session_state.training_spots) == 0:
-        with st.spinner("Detecting red markings..."):
-            hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
-            lower_red1 = np.array([0, 50, 50])
-            upper_red1 = np.array([10, 255, 255])
-            lower_red2 = np.array([170, 50, 50])
-            upper_red2 = np.array([180, 255, 255])
-            
-            mask1 = cv2.inRange(hsv, lower_red1, upper_red1)
-            mask2 = cv2.inRange(hsv, lower_red2, upper_red2)
-            red_mask = cv2.bitwise_or(mask1, mask2)
-            
-            contours, _ = cv2.findContours(red_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            
-            detected_count = 0
-            for contour in contours:
-                area = cv2.contourArea(contour)
-                if area > 20:
-                    M = cv2.moments(contour)
-                    if M["m00"] != 0:
-                        cx = int(M["m10"] / M["m00"])
-                        cy = int(M["m01"] / M["m00"])
-                        r = max(int(np.sqrt(area / np.pi)) + 5, 50)
-                        st.session_state.training_spots.append((cx, cy, r))
-                        detected_count += 1
-            
-            if detected_count > 0:
-                st.success(f"✅ Auto-detected {detected_count} red-marked spots!")
-            else:
-                st.warning("⚠️ No red markings detected. Mark manually below.")
-    
-    if mode == "🧠 Train U-Net Model":
-        st.header("Step 1: Mark Training Examples")
-        
-        if pre_marked is None:
-            st.markdown("Mark 3-10 dust spots for the neural network to learn from")
+    bgr = st.session_state.image_bgr
+    rgb = st.session_state.image_rgb
+
+    # Auto-detect red circles on first load of a pre-marked image
+    if pre_marked and len(st.session_state.spots) == 0:
+        with st.spinner("Detecting red markings…"):
+            found = detect_red_circles(bgr)
+        if found:
+            st.session_state.spots = found
+            st.success(f"✅ Auto-detected {len(found)} red-marked spots.")
         else:
-            st.markdown("✅ Using red circles as training examples")
-        
-        # Show preview
-        if pre_marked is None:
-            preview = image_rgb.copy()
-            for spot in st.session_state.training_spots:
-                x, y, r = spot
-                cv2.circle(preview, (x, y), r, (255, 0, 0), 2)
-                cv2.circle(preview, (x, y), 3, (255, 0, 0), -1)
-        else:
-            preview = image_rgb.copy()
-        
-        col1, col2 = st.columns([2, 1])
-        
-        with col1:
-            st.image(preview, width="stretch", caption=f"Training examples: {len(st.session_state.training_spots)}")
-        
-        with col2:
-            st.markdown("### Add Example")
-            x_input = st.number_input("X", 0, image.shape[1], 0, key="x_train")
-            y_input = st.number_input("Y", 0, image.shape[0], 0, key="y_train")
-            r_input = st.number_input("Radius", 10, 200, 50, key="r_train")
-            
-            if st.button("➕ Add", type="primary"):
-                st.session_state.training_spots.append((x_input, y_input, r_input))
+            st.warning("⚠️ No red markings found – add spots manually below.")
+
+
+# ── Content (only when image is loaded) ────────────────────────────────────────
+if st.session_state.image_bgr is not None:
+    bgr = st.session_state.image_bgr
+    rgb = st.session_state.image_rgb
+
+    # ── SPOT MARKING ───────────────────────────────────────────────────────────
+    st.subheader("2 · Mark Dust Spots")
+    col_img, col_ctrl = st.columns([3, 1])
+
+    with col_ctrl:
+        st.markdown("**Add a spot**")
+        xi = st.number_input("X", 0, bgr.shape[1] - 1, 0, key="xi")
+        yi = st.number_input("Y", 0, bgr.shape[0] - 1, 0, key="yi")
+        ri = st.number_input("Radius", 5, 300, brush_size, key="ri")
+
+        if st.button("➕ Add spot", type="primary"):
+            st.session_state.spots.append((int(xi), int(yi), int(ri)))
+            st.rerun()
+
+        if st.session_state.spots:
+            if st.button("🗑️ Clear all spots"):
+                st.session_state.spots        = []
+                st.session_state.trained      = False
+                st.session_state.model        = None
+                st.session_state.detected_mask = None
+                st.session_state.cleaned_rgb  = None
                 st.rerun()
-            
-            if st.session_state.training_spots:
-                if st.button("🗑️ Clear"):
-                    st.session_state.training_spots = []
-                    st.session_state.model_trained = False
-                    st.rerun()
-        
-        # Bulk input
-        with st.expander("📋 Paste coordinates"):
-            coords_text = st.text_area("x,y,radius (one per line)", height=100)
-            if st.button("Add All"):
-                for line in coords_text.strip().split('\n'):
+
+        with st.expander("📋 Paste multiple spots"):
+            bulk = st.text_area("x,y,radius – one per line", height=120)
+            if st.button("Add all"):
+                for line in bulk.strip().splitlines():
                     try:
-                        x, y, r = map(int, [p.strip() for p in line.split(',')])
-                        st.session_state.training_spots.append((x, y, r))
-                    except:
+                        x, y, r = map(int, [p.strip() for p in line.split(",")])
+                        st.session_state.spots.append((x, y, r))
+                    except Exception:
                         pass
                 st.rerun()
-        
-        # Training section
-        if len(st.session_state.training_spots) >= 3:
-            st.markdown("---")
-            st.header("Step 2: Train U-Net Neural Network")
-            
-            if st.button("🧠 Train U-Net Model", type="primary"):
-                with st.spinner("Training neural network..."):
-                    # Create training data
-                    dusty_patches, clean_patches, masks = create_training_data_from_marks(
-                        image, st.session_state.training_spots
-                    )
-                    
-                    if dusty_patches:
-                        # Initialize model with optional transfer learning
-                        model, init_message = initialize_model_with_transfer_learning(
-                            device, 
-                            use_pretrained=use_transfer_learning
-                        )
-                        
-                        st.info(f"🔧 {init_message}")
-                        
-                        # Train
-                        model, losses = train_unet_on_examples(
-                            model, dusty_patches, clean_patches, masks,
-                            device, epochs=training_epochs
-                        )
-                        
-                        st.session_state.unet_model = model
-                        st.session_state.model_trained = True
-                        
-                        transfer_text = " (with transfer learning)" if use_transfer_learning else ""
-                        st.success(f"✅ U-Net trained on {len(dusty_patches)} examples{transfer_text}!")
-                        
-                        # Show training curve
-                        import matplotlib.pyplot as plt
-                        fig, ax = plt.subplots(figsize=(8, 3))
-                        ax.plot(losses)
-                        ax.set_xlabel('Epoch')
-                        ax.set_ylabel('Loss')
-                        ax.set_title(f'Training Progress{transfer_text}')
-                        ax.grid(True)
-                        
-                        # Add annotation about transfer learning
-                        if use_transfer_learning:
-                            ax.text(0.5, 0.95, 'Using Transfer Learning (Encoder Frozen)', 
-                                   transform=ax.transAxes, ha='center', va='top',
-                                   bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.5))
-                        
-                        st.pyplot(fig)
-            
-            if st.session_state.model_trained and st.session_state.unet_model:
-                if st.button("🔍 Detect Dust with U-Net", type="primary"):
-                    with st.spinner("U-Net analyzing image..."):
-                        detected_mask = detect_dust_with_unet(
-                            st.session_state.unet_model,
-                            image,
-                            device,
-                            threshold=detection_threshold
-                        )
-                        
-                        if cv2.countNonZero(detected_mask) > 0:
-                            # Show detected
-                            vis = image_rgb.copy()
-                            contours, _ = cv2.findContours(detected_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                            
-                            for contour in contours:
-                                M = cv2.moments(contour)
-                                if M["m00"] != 0:
-                                    cx = int(M["m10"] / M["m00"])
-                                    cy = int(M["m01"] / M["m00"])
-                                    radius = int(np.sqrt(cv2.contourArea(contour) / np.pi)) + 5
-                                    cv2.circle(vis, (cx, cy), radius, (0, 255, 0), 2)
-                            
-                            st.subheader(f"U-Net Found {len(contours)} Spots!")
-                            st.image(vis, width="stretch")
-                            
-                            with st.expander("View mask"):
-                                st.image(detected_mask, width="stretch")
-                            
-                            if st.button("✅ Remove Detected Spots"):
-                                cleaned = remove_dust_spots(image, detected_mask)
-                                cleaned_rgb = cv2.cvtColor(cleaned, cv2.COLOR_BGR2RGB)
-                                
-                                col1, col2 = st.columns(2)
-                                with col1:
-                                    st.markdown("**Original**")
-                                    st.image(image_rgb, width="stretch")
-                                with col2:
-                                    st.markdown("**Cleaned**")
-                                    st.image(cleaned_rgb, width="stretch")
-                                
-                                st.success("✅ Cleaned!")
-                                
-                                pil_image = Image.fromarray(cleaned_rgb)
-                                buf = io.BytesIO()
-                                pil_image.save(buf, format="PNG")
-                                
-                                st.download_button(
-                                    "⬇️ Download",
-                                    data=buf.getvalue(),
-                                    file_name="unet_cleaned.png",
-                                    mime="image/png"
-                                )
-                        else:
-                            st.info("No spots detected. Try lowering threshold.")
-                
-                # Apply to another image
-                st.markdown("---")
-                st.subheader("🔄 Apply to Another Image")
-                
-                other_file = st.file_uploader(
-                    "Upload another image",
-                    type=["jpg", "jpeg", "png", "bmp", "tiff"],
-                    key="other"
-                )
-                
-                if other_file:
-                    other_bytes = np.asarray(bytearray(other_file.read()), dtype=np.uint8)
-                    other_image = cv2.imdecode(other_bytes, cv2.IMREAD_COLOR)
-                    other_rgb = cv2.cvtColor(other_image, cv2.COLOR_BGR2RGB)
-                    
-                    st.image(other_rgb, width="stretch")
-                    
-                    if st.button("🔍 Detect on This Image"):
-                        other_mask = detect_dust_with_unet(
-                            st.session_state.unet_model,
-                            other_image,
-                            device,
-                            threshold=detection_threshold
-                        )
-                        
-                        if cv2.countNonZero(other_mask) > 0:
-                            other_cleaned = remove_dust_spots(other_image, other_mask)
-                            other_cleaned_rgb = cv2.cvtColor(other_cleaned, cv2.COLOR_BGR2RGB)
-                            
-                            col1, col2 = st.columns(2)
-                            with col1:
-                                st.image(other_rgb, width="stretch")
-                            with col2:
-                                st.image(other_cleaned_rgb, width="stretch")
-                            
-                            pil_other = Image.fromarray(other_cleaned_rgb)
-                            buf_other = io.BytesIO()
-                            pil_other.save(buf_other, format="PNG")
-                            
-                            st.download_button(
-                                "⬇️ Download",
-                                data=buf_other.getvalue(),
-                                file_name="other_cleaned.png",
-                                mime="image/png",
-                                key="download_other"
-                            )
+
+        st.caption(f"**{len(st.session_state.spots)} spot(s) marked**")
+
+    with col_img:
+        preview = overlay_spots(rgb, st.session_state.spots)
+        st.image(preview, use_container_width=True,
+                 caption="Marked spots shown in red")
+
+    # ── MODE: MANUAL ───────────────────────────────────────────────────────────
+    if mode == "✏️ Manual Removal":
+        st.subheader("3 · Remove Marked Spots")
+        if not st.session_state.spots:
+            st.info("Mark at least one spot above, then click Remove.")
         else:
-            st.info("Mark at least 3 spots to train U-Net")
-    
+            if st.button("🧹 Remove marked spots", type="primary"):
+                mask = np.zeros(bgr.shape[:2], dtype=np.uint8)
+                for x, y, r in st.session_state.spots:
+                    cv2.circle(mask, (x, y), r, 255, -1)
+                cleaned_bgr = inpaint(bgr, mask)
+                st.session_state.cleaned_rgb = cv2.cvtColor(cleaned_bgr, cv2.COLOR_BGR2RGB)
+
+        if st.session_state.cleaned_rgb is not None:
+            st.success("✅ Spots removed!")
+            c1, c2 = st.columns(2)
+            with c1:
+                st.markdown("**Original**")
+                st.image(rgb, use_container_width=True)
+            with c2:
+                st.markdown("**Cleaned**")
+                st.image(st.session_state.cleaned_rgb, use_container_width=True)
+
+            buf = io.BytesIO()
+            Image.fromarray(st.session_state.cleaned_rgb).save(buf, format="PNG")
+            st.download_button("⬇️ Download cleaned image", buf.getvalue(),
+                               "cleaned.png", "image/png")
+
+    # ── MODE: U-NET ────────────────────────────────────────────────────────────
     else:
-        # Manual mode (same as before)
-        st.header("Manual Removal")
-        # ... (manual mode code would go here)
-        st.info("Manual mode: Mark spots and remove directly")
+        # ── TRAIN ──────────────────────────────────────────────────────────────
+        st.subheader("3 · Train U-Net")
+        if len(st.session_state.spots) < 3:
+            st.info("Mark at least **3 spots** above to enable training.")
+        else:
+            if st.button("🧠 Train U-Net model", type="primary"):
+                dusty, masks = create_training_data(bgr, st.session_state.spots)
+                if not dusty:
+                    st.error("No valid patches extracted – try larger spot radii or spots not too close to image edges.")
+                else:
+                    model = UNet().to(device)
+                    tl_note = " (encoder frozen)" if use_tl else ""
+                    st.info(f"Training on {len(dusty)} patch(es){tl_note}…")
+                    model, losses = train_unet(model, dusty, masks, device, epochs, freeze_encoder=use_tl)
+                    st.session_state.model   = model
+                    st.session_state.trained = True
+                    st.session_state.detected_mask = None  # reset previous detection
+                    st.session_state.cleaned_rgb   = None
+
+                    st.success(f"✅ Trained {epochs} epoch(s) on {len(dusty)} patch(es){tl_note}!")
+
+                    fig, ax = plt.subplots(figsize=(7, 2.5))
+                    ax.plot(losses, color="#4c9be8")
+                    ax.set_xlabel("Epoch"); ax.set_ylabel("BCE Loss")
+                    ax.set_title("Training Loss" + tl_note); ax.grid(True, alpha=0.3)
+                    st.pyplot(fig)
+                    plt.close(fig)
+
+        # ── DETECT ─────────────────────────────────────────────────────────────
+        if st.session_state.trained and st.session_state.model:
+            st.subheader("4 · Detect Dust Spots")
+            if st.button("🔍 Run U-Net detection", type="primary"):
+                with st.spinner("Running U-Net…"):
+                    mask = detect_with_unet(st.session_state.model, bgr, device, det_threshold)
+                st.session_state.detected_mask = mask
+                st.session_state.cleaned_rgb   = None  # reset previous result
+
+            if st.session_state.detected_mask is not None:
+                dmask = st.session_state.detected_mask
+                n_contours = len(cv2.findContours(dmask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[0])
+
+                if cv2.countNonZero(dmask) == 0:
+                    st.warning("No spots detected – try lowering the Detection Threshold.")
+                else:
+                    # Visualise detections
+                    vis = rgb.copy()
+                    contours, _ = cv2.findContours(dmask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                    for c in contours:
+                        M = cv2.moments(c)
+                        if M["m00"] != 0:
+                            cx = int(M["m10"] / M["m00"])
+                            cy = int(M["m01"] / M["m00"])
+                            cr = int(np.sqrt(cv2.contourArea(c) / np.pi)) + 3
+                            cv2.circle(vis, (cx, cy), cr, (0, 230, 80), 2)
+                    st.success(f"Found **{n_contours}** spot(s) – shown in green below.")
+                    st.image(vis, use_container_width=True, caption="Detected spots")
+
+                    with st.expander("View raw detection mask"):
+                        st.image(dmask, use_container_width=True)
+
+                    # ── REMOVE ─────────────────────────────────────────────────
+                    st.subheader("5 · Remove & Download")
+                    if st.button("✅ Remove detected spots", type="primary"):
+                        cleaned_bgr = inpaint(bgr, dmask)
+                        st.session_state.cleaned_rgb = cv2.cvtColor(cleaned_bgr, cv2.COLOR_BGR2RGB)
+
+                    if st.session_state.cleaned_rgb is not None:
+                        c1, c2 = st.columns(2)
+                        with c1:
+                            st.markdown("**Original**")
+                            st.image(rgb, use_container_width=True)
+                        with c2:
+                            st.markdown("**Cleaned**")
+                            st.image(st.session_state.cleaned_rgb, use_container_width=True)
+
+                        buf = io.BytesIO()
+                        Image.fromarray(st.session_state.cleaned_rgb).save(buf, format="PNG")
+                        st.download_button("⬇️ Download cleaned image", buf.getvalue(),
+                                           "unet_cleaned.png", "image/png")
+
+            # ── APPLY TO ANOTHER IMAGE ──────────────────────────────────────────
+            st.markdown("---")
+            st.subheader("Apply trained model to another image")
+            other = st.file_uploader("Upload another image", type=["jpg","jpeg","png","bmp","tiff"],
+                                     key="other_img")
+            if other:
+                ob  = np.asarray(bytearray(other.read()), dtype=np.uint8)
+                obgr = cv2.imdecode(ob, cv2.IMREAD_COLOR)
+                orgb = cv2.cvtColor(obgr, cv2.COLOR_BGR2RGB)
+                st.image(orgb, use_container_width=True, caption="Other image")
+                if st.button("🔍 Detect & remove on this image"):
+                    with st.spinner("Detecting…"):
+                        omask = detect_with_unet(st.session_state.model, obgr, device, det_threshold)
+                    if cv2.countNonZero(omask) > 0:
+                        ocleaned = cv2.cvtColor(inpaint(obgr, omask), cv2.COLOR_BGR2RGB)
+                        c1, c2 = st.columns(2)
+                        with c1: st.image(orgb,     use_container_width=True, caption="Before")
+                        with c2: st.image(ocleaned, use_container_width=True, caption="After")
+                        obuf = io.BytesIO()
+                        Image.fromarray(ocleaned).save(obuf, format="PNG")
+                        st.download_button("⬇️ Download", obuf.getvalue(),
+                                           "other_cleaned.png", "image/png", key="dl_other")
+                    else:
+                        st.info("No spots detected on this image.")
 
 else:
-    st.info("👆 Upload an image to start")
-    
-    st.markdown("---")
-    st.subheader("🧠 Why U-Net?")
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
+    # Welcome screen
+    st.info("👆 Upload an image above to get started.")
+    c1, c2 = st.columns(2)
+    with c1:
         st.markdown("""
-        ### Traditional CV
-        - Rule-based algorithms
-        - Fixed feature detection
-        - Can't learn patterns
-        - Limited adaptability
+        **🧠 U-Net mode**
+        - Mark 3–10 example spots
+        - Neural network trains on your examples
+        - Detects all similar spots automatically
+        - State-of-the-art inpainting
         """)
-    
-    with col2:
+    with c2:
         st.markdown("""
-        ### U-Net Deep Learning
-        - Learns from examples
-        - Captures spatial patterns
-        - Adapts to your dust type
-        - State-of-the-art accuracy
+        **✏️ Manual mode**
+        - Enter coordinates of each spot
+        - Instant removal, no training needed
+        - Great for a small number of known spots
         """)
 
 st.markdown("---")
-st.markdown("<div style='text-align: center; color: #666;'>Deep Learning Dust Remover | U-Net Architecture</div>", unsafe_allow_html=True)
+st.caption("Deep Learning Dust Remover · U-Net Architecture · Built with PyTorch & Streamlit")
